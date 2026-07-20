@@ -16,6 +16,7 @@ Usage:
 import argparse
 import collections
 import logging
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -33,6 +34,16 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Flat-file database types — these become File nodes instead of Table/Database
+# ---------------------------------------------------------------------------
+_FLAT_FILE_TYPES = {"FLAT FILE", "FIXED-LENGTH", "COBOL", "VSAM", "XML", "FTP"}
+
+
+def _is_flat_file(db_type: str) -> bool:
+    return db_type.upper().strip() in _FLAT_FILE_TYPES
+
 
 # ---------------------------------------------------------------------------
 # Port type label mapping (Informatica PORTTYPE → Neo4j label)
@@ -87,6 +98,21 @@ def field_id(repo_name, folder_name, obj_type, obj_name, field_name):
 def parameter_id(repo_name, folder_name, scope, param_name):
     return f"{repo_name}.{folder_name}.{scope}.{param_name}"
 
+def source_def_id(repo_name, folder_name, source_name):
+    return f"{repo_name}.{folder_name}.{source_name}"
+
+def target_def_id(repo_name, folder_name, target_name):
+    return f"{repo_name}.{folder_name}.{target_name}"
+
+def database_id_fn(db_type, db_name):
+    return f"{db_type}.{db_name}"
+
+def table_id_fn(db_type, db_name, table_name):
+    return f"{db_type}.{db_name}.{table_name}"
+
+def file_id_fn(repo_name, folder_name, file_name):
+    return f"{repo_name}.{folder_name}.{file_name}"
+
 
 # ---------------------------------------------------------------------------
 # Dry-run session stub — counts and prints what would be written
@@ -123,6 +149,16 @@ class _DryRunSession:
             self._counts["TransformationProperty"] += 1
         elif "MERGE (p:Parameter" in query:
             self._counts["Parameter"] += 1
+        elif "MERGE (sd:SourceDefinition" in query:
+            self._counts["SourceDefinition"] += 1
+        elif "MERGE (td:TargetDefinition" in query:
+            self._counts["TargetDefinition"] += 1
+        elif "MERGE (d:Database" in query:
+            self._counts["Database"] += 1
+        elif "MERGE (tbl:Table" in query:
+            self._counts["Table"] += 1
+        elif "MERGE (fi:File" in query:
+            self._counts["File"] += 1
         elif "MERGE (f:Column:Field" in query:
             self._counts["Field"] += 1
         elif "MERGE (from)-[:FLOWS_TO]" in query:
@@ -207,6 +243,11 @@ class InformaticaXMLParser:
             "CREATE CONSTRAINT expression_id IF NOT EXISTS FOR (e:Expression) REQUIRE e.expressionId IS UNIQUE",
             "CREATE CONSTRAINT property_id IF NOT EXISTS FOR (tp:TransformationProperty) REQUIRE tp.propertyId IS UNIQUE",
             "CREATE CONSTRAINT parameter_id IF NOT EXISTS FOR (p:Parameter) REQUIRE p.parameterId IS UNIQUE",
+            "CREATE CONSTRAINT source_id IF NOT EXISTS FOR (sd:SourceDefinition) REQUIRE sd.sourceId IS UNIQUE",
+            "CREATE CONSTRAINT target_id IF NOT EXISTS FOR (td:TargetDefinition) REQUIRE td.targetId IS UNIQUE",
+            "CREATE CONSTRAINT database_id IF NOT EXISTS FOR (d:Database) REQUIRE d.databaseId IS UNIQUE",
+            "CREATE CONSTRAINT table_id IF NOT EXISTS FOR (tbl:Table) REQUIRE tbl.tableId IS UNIQUE",
+            "CREATE CONSTRAINT file_id IF NOT EXISTS FOR (fi:File) REQUIRE fi.fileId IS UNIQUE",
         ]
         for stmt in stmts:
             try:
@@ -268,10 +309,10 @@ class InformaticaXMLParser:
         folder_targets = self._index_targets(folder_elem, r_name, f_name)
 
         for source_elem in folder_elem.findall("SOURCE"):
-            self._load_fields_from_source(db, source_elem, r_name, f_name)
+            self._load_source_definition(db, source_elem, r_name, f_name)
 
         for target_elem in folder_elem.findall("TARGET"):
-            self._load_fields_from_target(db, target_elem, r_name, f_name)
+            self._load_target_definition(db, target_elem, r_name, f_name)
 
         for mapping_elem in folder_elem.findall("MAPPING"):
             self._load_mapping(db, mapping_elem, r_name, f_name, f_id,
@@ -305,8 +346,69 @@ class InformaticaXMLParser:
             }
         return index
 
-    def _load_fields_from_source(self, db, src_elem, r_name, f_name) -> None:
+    def _load_source_definition(self, db, src_elem, r_name, f_name) -> None:
         src_name = src_elem.get("NAME", "")
+        db_type  = src_elem.get("DATABASETYPE", "")
+        db_name  = src_elem.get("DBDNAME", "")
+        sd_id    = source_def_id(r_name, f_name, src_name)
+
+        db.run(
+            "MERGE (sd:SourceDefinition {sourceId: $id}) SET sd.name = $name",
+            id=sd_id, name=src_name,
+        )
+
+        if _is_flat_file(db_type):
+            attrs = {a.get("NAME", "").upper(): a.get("VALUE", "")
+                     for a in src_elem.findall("TABLEATTRIBUTE")}
+            fi_id = file_id_fn(r_name, f_name, src_name)
+            db.run(
+                """
+                MERGE (fi:File {fileId: $id})
+                SET fi.name            = $name,
+                    fi.Location        = $location,
+                    fi.Encoding        = $encoding,
+                    fi.Delimiters      = $delimiters,
+                    fi.EscapeCharacter = $escapeChar,
+                    fi.NullCharacter   = $nullChar,
+                    fi.PadBytes        = $padBytes,
+                    fi.QuoteCharacter  = $quoteChar,
+                    fi.SkipRows        = $skipRows
+                WITH fi
+                MATCH (sd:SourceDefinition {sourceId: $sdId})
+                MERGE (fi)-[:HAS_DEFINITION]->(sd)
+                """,
+                id=fi_id, name=src_name,
+                location=attrs.get("LOCATION", ""),
+                encoding=attrs.get("ENCODING", ""),
+                delimiters=attrs.get("DELIMITERS", ""),
+                escapeChar=attrs.get("ESCAPE CHARACTER", attrs.get("ESCAPECHARACTER", "")),
+                nullChar=attrs.get("NULL CHARACTER", attrs.get("NULLCHARACTER", "")),
+                padBytes=attrs.get("PAD BYTES", attrs.get("PADBYTES", "")),
+                quoteChar=attrs.get("QUOTE CHARACTER", attrs.get("QUOTECHARACTER", "")),
+                skipRows=attrs.get("SKIP ROWS", attrs.get("SKIPROWS", "")),
+                sdId=sd_id,
+            )
+        else:
+            d_id  = database_id_fn(db_type, db_name)
+            t_id  = table_id_fn(db_type, db_name, src_name)
+            db.run(
+                """
+                MERGE (d:Database {databaseId: $dId})
+                SET d.DBName       = $dbName,
+                    d.databaseType = $dbType
+                WITH d
+                MERGE (tbl:Table {tableId: $tId})
+                SET tbl.TableName = $tName
+                MERGE (d)-[:HAS_TABLE]->(tbl)
+                MERGE (tbl)-[:BELONGS_TO]->(d)
+                WITH tbl
+                MATCH (sd:SourceDefinition {sourceId: $sdId})
+                MERGE (tbl)-[:HAS_DEFINITION]->(sd)
+                """,
+                dId=d_id, dbName=db_name, dbType=db_type,
+                tId=t_id, tName=src_name, sdId=sd_id,
+            )
+
         for i, sf in enumerate(src_elem.findall("SOURCEFIELD")):
             f_name_col = sf.get("NAME", "")
             f_id = field_id(r_name, f_name, "SOURCE", src_name, f_name_col)
@@ -320,19 +422,82 @@ class InformaticaXMLParser:
                     f.nullable        = $nullable,
                     f.keyType         = $keyType,
                     f.ordinalPosition = $pos
+                WITH f
+                MATCH (sd:SourceDefinition {sourceId: $sdId})
+                MERGE (sd)-[:HAS_FIELD]->(f)
                 """,
-                id=f_id,
-                name=f_name_col,
+                id=f_id, name=f_name_col,
                 datatype=sf.get("DATATYPE", ""),
                 precision=sf.get("PRECISION", ""),
                 scale=sf.get("SCALE", ""),
                 nullable=sf.get("NULLABLE", ""),
                 keyType=sf.get("KEYTYPE", ""),
-                pos=i,
+                pos=i, sdId=sd_id,
             )
 
-    def _load_fields_from_target(self, db, tgt_elem, r_name, f_name) -> None:
+    def _load_target_definition(self, db, tgt_elem, r_name, f_name) -> None:
         tgt_name = tgt_elem.get("NAME", "")
+        db_type  = tgt_elem.get("DATABASETYPE", "")
+        db_name  = tgt_elem.get("DBDNAME", "")
+        td_id    = target_def_id(r_name, f_name, tgt_name)
+
+        db.run(
+            "MERGE (td:TargetDefinition {targetId: $id}) SET td.name = $name",
+            id=td_id, name=tgt_name,
+        )
+
+        if _is_flat_file(db_type):
+            attrs = {a.get("NAME", "").upper(): a.get("VALUE", "")
+                     for a in tgt_elem.findall("TABLEATTRIBUTE")}
+            fi_id = file_id_fn(r_name, f_name, tgt_name)
+            db.run(
+                """
+                MERGE (fi:File {fileId: $id})
+                SET fi.name            = $name,
+                    fi.Location        = $location,
+                    fi.Encoding        = $encoding,
+                    fi.Delimiters      = $delimiters,
+                    fi.EscapeCharacter = $escapeChar,
+                    fi.NullCharacter   = $nullChar,
+                    fi.PadBytes        = $padBytes,
+                    fi.QuoteCharacter  = $quoteChar,
+                    fi.SkipRows        = $skipRows
+                WITH fi
+                MATCH (td:TargetDefinition {targetId: $tdId})
+                MERGE (fi)-[:HAS_DEFINITION]->(td)
+                """,
+                id=fi_id, name=tgt_name,
+                location=attrs.get("LOCATION", ""),
+                encoding=attrs.get("ENCODING", ""),
+                delimiters=attrs.get("DELIMITERS", ""),
+                escapeChar=attrs.get("ESCAPE CHARACTER", attrs.get("ESCAPECHARACTER", "")),
+                nullChar=attrs.get("NULL CHARACTER", attrs.get("NULLCHARACTER", "")),
+                padBytes=attrs.get("PAD BYTES", attrs.get("PADBYTES", "")),
+                quoteChar=attrs.get("QUOTE CHARACTER", attrs.get("QUOTECHARACTER", "")),
+                skipRows=attrs.get("SKIP ROWS", attrs.get("SKIPROWS", "")),
+                tdId=td_id,
+            )
+        else:
+            d_id  = database_id_fn(db_type, db_name)
+            t_id  = table_id_fn(db_type, db_name, tgt_name)
+            db.run(
+                """
+                MERGE (d:Database {databaseId: $dId})
+                SET d.DBName       = $dbName,
+                    d.databaseType = $dbType
+                WITH d
+                MERGE (tbl:Table {tableId: $tId})
+                SET tbl.TableName = $tName
+                MERGE (d)-[:HAS_TABLE]->(tbl)
+                MERGE (tbl)-[:BELONGS_TO]->(d)
+                WITH tbl
+                MATCH (td:TargetDefinition {targetId: $tdId})
+                MERGE (tbl)-[:HAS_DEFINITION]->(td)
+                """,
+                dId=d_id, dbName=db_name, dbType=db_type,
+                tId=t_id, tName=tgt_name, tdId=td_id,
+            )
+
         for i, tf in enumerate(tgt_elem.findall("TARGETFIELD")):
             f_name_col = tf.get("NAME", "")
             f_id = field_id(r_name, f_name, "TARGET", tgt_name, f_name_col)
@@ -346,15 +511,17 @@ class InformaticaXMLParser:
                     f.nullable        = $nullable,
                     f.keyType         = $keyType,
                     f.ordinalPosition = $pos
+                WITH f
+                MATCH (td:TargetDefinition {targetId: $tdId})
+                MERGE (td)-[:HAS_FIELD]->(f)
                 """,
-                id=f_id,
-                name=f_name_col,
+                id=f_id, name=f_name_col,
                 datatype=tf.get("DATATYPE", ""),
                 precision=tf.get("PRECISION", ""),
                 scale=tf.get("SCALE", ""),
                 nullable=tf.get("NULLABLE", ""),
                 keyType=tf.get("KEYTYPE", ""),
-                pos=i,
+                pos=i, tdId=td_id,
             )
 
     # ------------------------------------------------------------------
@@ -385,10 +552,10 @@ class InformaticaXMLParser:
         local_targets = self._index_targets(mapping_elem, r_name, f_name)
 
         for src_elem in mapping_elem.findall("SOURCE"):
-            self._load_fields_from_source(db, src_elem, r_name, f_name)
+            self._load_source_definition(db, src_elem, r_name, f_name)
 
         for tgt_elem in mapping_elem.findall("TARGET"):
-            self._load_fields_from_target(db, tgt_elem, r_name, f_name)
+            self._load_target_definition(db, tgt_elem, r_name, f_name)
 
         # Merge folder-level and local definitions; local wins on conflict
         sources = {**folder_sources, **local_sources}
@@ -457,6 +624,114 @@ class InformaticaXMLParser:
         for attr in trans_elem.findall("TABLEATTRIBUTE"):
             self._load_property(db, attr, r_name, f_name, m_name, t_name, t_id)
 
+        # Wire intra-transformation port flows (e.g. Router input → output groups)
+        self._create_intra_transformation_flows(db, trans_elem, r_name, f_name, m_name, t_name)
+
+    # ------------------------------------------------------------------
+    # Intra-transformation port flows
+    # ------------------------------------------------------------------
+
+    def _create_intra_transformation_flows(self, db, trans_elem, r_name, f_name,
+                                            m_name, t_name) -> None:
+        """Dispatch to transformation-type-specific internal wiring."""
+        trans_type = trans_elem.get("TYPE", "").upper()
+        if trans_type == "ROUTER":
+            self._create_router_port_flows(db, trans_elem, r_name, f_name, m_name, t_name)
+        elif trans_type == "EXPRESSION":
+            self._create_expression_port_flows(db, trans_elem, r_name, f_name, m_name, t_name)
+
+    def _create_router_port_flows(self, db, trans_elem, r_name, f_name,
+                                   m_name, t_name) -> None:
+        """
+        In a Router, each output group repeats the input port set in the same
+        positional order.  The flat TRANSFORMFIELD list is arranged as:
+            [in_0, in_1, ..., in_{n-1},          # n input ports
+             g1_out_0, g1_out_1, ..., g1_out_{n-1},  # group 1
+             g2_out_0, ...,                           # group 2  …]
+        So output[i] maps to input[i % n].
+        """
+        input_port_ids = []
+        output_port_ids = []
+
+        for tf in trans_elem.findall("TRANSFORMFIELD"):
+            porttype = tf.get("PORTTYPE", tf.get("TYPE", "")).upper().strip()
+            p_name = tf.get("NAME", "")
+            p_id = port_id(r_name, f_name, m_name, t_name, p_name)
+            if porttype == "INPUT":
+                input_port_ids.append(p_id)
+            elif porttype == "OUTPUT":
+                output_port_ids.append(p_id)
+
+        n = len(input_port_ids)
+        if n == 0 or not output_port_ids:
+            return
+
+        for idx, out_p_id in enumerate(output_port_ids):
+            in_p_id = input_port_ids[idx % n]
+            db.run(
+                """
+                MATCH (from:Column:Port {portId: $fromId})
+                MATCH (to:Column:Port   {portId: $toId})
+                MERGE (from)-[:FLOWS_TO]->(to)
+                """,
+                fromId=in_p_id, toId=out_p_id,
+            )
+
+    def _create_expression_port_flows(self, db, trans_elem, r_name, f_name,
+                                       m_name, t_name) -> None:
+        """
+        For Expression transformations, parse each port's expression to
+        discover references to other ports in the same transformation and
+        create FLOWS_TO edges accordingly.
+
+        Covers all intra-transformation paths:
+            INPUT  → LOCAL VARIABLE
+            LOCAL VARIABLE → LOCAL VARIABLE
+            LOCAL VARIABLE → OUTPUT
+            INPUT  → OUTPUT  (direct passthrough)
+
+        A port A is considered referenced by port B when A's name appears
+        as a whole identifier (word-boundary delimited) inside B's expression.
+        """
+        # Collect every port: name → {id, expression}
+        ports = {}
+        for tf in trans_elem.findall("TRANSFORMFIELD"):
+            p_name = tf.get("NAME", "")
+            p_id = port_id(r_name, f_name, m_name, t_name, p_name)
+            ports[p_name] = {
+                "id": p_id,
+                "expression": tf.get("EXPRESSION", ""),
+            }
+
+        if len(ports) < 2:
+            return
+
+        # Pre-compile a word-boundary pattern for every port name so we
+        # don't recompile inside the inner loop.
+        port_patterns = {
+            name: re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
+            for name in ports
+        }
+
+        for target_name, target_info in ports.items():
+            expr = target_info["expression"].strip()
+            if not expr:
+                continue
+
+            for source_name, pattern in port_patterns.items():
+                if source_name == target_name:
+                    continue
+                if pattern.search(expr):
+                    db.run(
+                        """
+                        MATCH (from:Column:Port {portId: $fromId})
+                        MATCH (to:Column:Port   {portId: $toId})
+                        MERGE (from)-[:FLOWS_TO]->(to)
+                        """,
+                        fromId=ports[source_name]["id"],
+                        toId=target_info["id"],
+                    )
+
     # ------------------------------------------------------------------
     # Port (TRANSFORMFIELD)
     # ------------------------------------------------------------------
@@ -523,6 +798,8 @@ class InformaticaXMLParser:
                        t_name, t_id) -> None:
         prop_name = attr_elem.get("NAME", "")
         prop_value = attr_elem.get("VALUE", "")
+        if not prop_value or not prop_value.strip():
+            return
         p_id = property_id(r_name, f_name, m_name, t_name, prop_name)
 
         db.run(

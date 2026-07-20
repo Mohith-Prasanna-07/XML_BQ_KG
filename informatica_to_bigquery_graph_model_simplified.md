@@ -19,9 +19,61 @@
 (:TransformationProperty)
 (:Parameter)
 (:ConversionRule)
+(:Table)
+(:File)
+(:Database)
+(:SourceDefinition) 
+(:TargetDefinition)
+
 ```
 
 ## Node Properties
+
+### Database
+
+```text
+DatabaseId
+DBName
+databaseType
+```
+
+### Table
+
+```text
+tableId
+TableName
+```
+
+### File
+
+```text
+fileId
+name
+Location
+Encoding
+Delimiters
+EscapeCharacter
+NullCharacter
+PadBytes
+QuoteCharacter
+SkipRows
+```
+
+
+### SurceDefinition
+
+```text
+sourceId
+name
+```
+
+### TargetDefinition
+
+```text
+targetId
+name
+```
+
 
 ### Repository
 
@@ -169,6 +221,14 @@ ruleType
 (:Column:Field)-[:FLOWS_TO_FIELD]->(:Column:Field)
 (:ConversionRule)-[:APPLIES_TO_EXPRESSION]->(:Expression)
 (:ConversionRule)-[:APPLIES_TO_TRANSFORMATION]->(:Transformation)
+(:SourceDefinition)-[:HAS_FIELD]->(:Column:Field)
+(:TargetDefinition)-[:HAS_FIELD]->(:Column:Field)
+(:Table)-[:HAS_DEFINITION]->(:SourceDefinition)
+(:Table)-[:HAS_DEFINITION]->(:TargetDefinition)
+(:Table)-[:BELONGS_TO]->(:Database)
+(:Database)-[:HAS_TABLE]->(:Table)
+(:File)-[:HAS_DEFINITION]->(:SourceDefinition)
+(:File)-[:HAS_DEFINITION]->(:TargetDefinition)
 ```
 
 ## Constraints
@@ -222,13 +282,25 @@ CREATE CONSTRAINT conversion_rule_id IF NOT EXISTS
 FOR (r:ConversionRule)
 REQUIRE r.ruleId IS UNIQUE;
 
-CREATE CONSTRAINT bigquery_expression_id IF NOT EXISTS
-FOR (b:BigQueryExpression)
-REQUIRE b.bigqueryExpressionId IS UNIQUE;
+CREATE CONSTRAINT table_id IF NOT EXISTS
+FOR (p:Table)
+REQUIRE p.tableId IS UNIQUE;
 
-CREATE CONSTRAINT unsupported_feature_id IF NOT EXISTS
-FOR (u:UnsupportedFeature)
-REQUIRE u.featureId IS UNIQUE;
+CREATE CONSTRAINT file_id IF NOT EXISTS
+FOR (p:File)
+REQUIRE p.fileId IS UNIQUE;
+
+CREATE CONSTRAINT database_id IF NOT EXISTS
+FOR (p:Database)
+REQUIRE p.databaseId IS UNIQUE;
+
+CREATE CONSTRAINT target_id IF NOT EXISTS
+FOR (p:TargetDefinition)
+REQUIRE p.targetId IS UNIQUE;
+
+CREATE CONSTRAINT source_id IF NOT EXISTS
+FOR (p:SourceDefinition)
+REQUIRE p.sourceId IS UNIQUE;
 
 CREATE CONSTRAINT conversion_issue_id IF NOT EXISTS
 FOR (i:ConversionIssue)
@@ -249,9 +321,38 @@ portId = repositoryName + "." + folderName + "." + mappingName + "." + transform
 expressionId = repositoryName + "." + folderName + "." + mappingName + "." + transformationName + "." + portName + ".expression"
 propertyId = repositoryName + "." + folderName + "." + mappingName + "." + transformationName + "." + propertyName
 parameterId = repositoryName + "." + folderName + "." + parameterScope + "." + parameterName
+targetId = repositoryName + "." + folderName + "." + targetName
+sourceId = repositoryName + "." + folderName + "." + sourceName
+fileId = repositoryName + "." + folderName + "." + fileName
+tableId = databaseType + "." + databaseName + "." + tableName
+databaseId = databaseType + "." + databaseName
 ```
 
 ## Core Graph Paths
+
+### Source Table Structure Path
+
+```text
+(:Database)-[:HAS_TABLE]->(:Table)-[:HAS_DEFINITION]->(:SourceDefinition)-[:HAS_FIELD]->(:Column:Field)
+```
+
+### Target Table Structure Path
+
+```text
+(:Database)-[:HAS_TABLE]->(:Table)-[:HAS_DEFINITION]->(:TargetDefinition)-[:HAS_FIELD]->(:Column:Field)
+```
+
+### Target File Structure Path
+
+```text
+(:File)-[:HAS_DEFINITION]->(:TargetDefinition)-[:HAS_FIELD]->(:Column:Field)
+```
+
+### Source File Structure Path
+
+```text
+(:File)-[:HAS_DEFINITION]->(:SourceDefinition)-[:HAS_FIELD]->(:Column:Field)
+```
 
 ### Mapping Structure Path
 
