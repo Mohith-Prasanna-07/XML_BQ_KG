@@ -1,0 +1,1853 @@
+========================================================================
+SYSTEM PROMPT
+========================================================================
+You are an expert in Informatica PowerCenter and Google BigQuery SQL.
+You will receive a JSON object containing a Knowledge Graph subgraph
+representing one Informatica mapping — its source tables, transformation
+pipeline, field-level lineage, and target table.
+Your job is to generate a single BigQuery SQL file for this mapping.
+
+INPUT STRUCTURE:
+{
+  "subgraph": {
+    "mapping_name": "...",
+    "description": "...",
+    "sources": [{"name", "db_type", "owner", "fields": [{"name","datatype",...}]}],
+    "targets": [{"name", "db_type", "fields": [{"name","datatype",...}]}],
+    "pipeline": [
+      {
+        "name": "...",
+        "type": "Source Qualifier|Expression|Lookup Procedure|Router|Update Strategy|Aggregator|Filter|Joiner|Sequence",
+        "fields": [{"name","datatype","expression","expression_type","port_type","group","ref_field"}],
+        "groups": [{"name","type","expression","order"}],
+        "sql_override": "...",
+        "source_filter": "...",
+        "lookup_table": "...",
+        "lookup_condition": "...",
+        "filter_condition": "...",
+        "update_strategy_expr": "...",
+        "select_distinct": true|false
+      }
+    ],
+    "field_lineage": [{"from_field","from_instance","from_type","to_field","to_instance","to_type"}],
+    "parameters": [{"name","datatype","default_value"}]
+  },
+  "context_layer": {
+    "function_map": {"IIF": "IF(...)", ...},
+    "datatype_map": {"string": "STRING", ...},
+    "transform_patterns": {"Source Qualifier": {...}, ...}
+  }
+}
+
+TRANSFORMATION → SQL RULES:
+
+1. Source Qualifier
+   - No sql_override: SELECT <connected fields> FROM `@{PROJECT_ID}.@{DATASET}.<table>`
+     Add WHERE <source_filter> if source_filter is not null.
+     Add DISTINCT if select_distinct is true.
+   - With sql_override: use that SQL as a CTE. Translate Teradata to BQ:
+       CURRENT_DATE        -> CURRENT_DATE()
+       CURRENT_TIMESTAMP   -> CURRENT_TIMESTAMP()
+       TRIM(BOTH x FROM y) -> TRIM(y)
+       ZEROIFNULL(x)       -> IFNULL(x, 0)
+       NULLIFZERO(x)       -> NULLIF(x, 0)
+       INDEX(s, sub)       -> STRPOS(s, sub)
+       CHAR_LENGTH(x)      -> LENGTH(x)
+       TO_CHAR(d,'YYYYMM') -> FORMAT_DATETIME('%Y%m', d)
+       QUALIFY ROW_NUMBER() OVER (...) = 1 -> wrap in subquery with WHERE rn=1
+       $$PARAM_NAME        -> @PARAM_NAME
+
+2. Expression
+   - Each field with port_type=OUTPUT  -> computed SELECT alias using its expression
+   - Each field with port_type=INPUT/OUTPUT -> pass-through (SELECT field_name)
+   - Each field with port_type=LOCAL VARIABLE -> intermediate CTE column
+   - Translate expressions using the function_map from context_layer:
+       IIF(cond, a, b)                      -> IF(cond, a, b)
+       ISNULL(x)                            -> x IS NULL
+       TO_DATE('31-DEC-9999','DD-MON-YYYY') -> DATE '9999-12-31'
+       DATE_DIFF(a, b, 'MM')               -> TIMESTAMP_DIFF(a, b, MONTH)
+       ADD_MONTHS(d, n)                     -> DATE_ADD(d, INTERVAL n MONTH)
+       SESSSTARTTIME                        -> CURRENT_TIMESTAMP()
+       SYSDATE                              -> CURRENT_DATETIME()
+       TO_CHAR(d, fmt)                      -> FORMAT_DATETIME(fmt, d)
+   - Wrap all TIMESTAMP results with: TIMESTAMP(expr, 'America/New_York')
+
+3. Lookup Procedure
+   - LEFT JOIN `@{PROJECT_ID}.@{DATASET}.<lookup_table>` lkp
+       ON <lookup_condition translated to BQ column syntax>
+   - LOOKUP/OUTPUT port_type fields -> columns returned from the join
+   - If lookup_sql_override is set, use it as the joined subquery
+
+4. Router
+   - If connected downstream to an UpdateStrategy -> generate MERGE:
+       MERGE `@{PROJECT_ID}.@{DATASET}.<target>` T
+       USING (<upstream_cte>) S ON <key_condition from lookup>
+       WHEN NOT MATCHED THEN INSERT (<INSERT group fields>) VALUES (<values>)
+       WHEN MATCHED THEN UPDATE SET <field=value pairs>
+   - INSERT group = group with ISNULL condition
+   - UPDATE/DEFAULT group = the other output groups
+   - Use REF_FIELD attribute to map output ports back to input field names
+
+5. Update Strategy
+   - DD_UPDATE -> WHEN MATCHED THEN UPDATE SET ...
+   - DD_INSERT -> INSERT INTO `@{PROJECT_ID}.@{DATASET}.<target>` (...) VALUES (...)
+   - DD_DELETE -> WHEN MATCHED THEN DELETE
+   - DD_REJECT -> -- TODO: Rejected rows — manual review required
+
+6. Aggregator
+   - Wrap upstream CTE in: SELECT <fields> FROM <cte> GROUP BY <GROUPBY fields>
+   - Fields with expression_type=GROUPBY go in GROUP BY
+   - Others use their aggregate expression (COUNT, SUM, AVG, etc.)
+
+7. Filter
+   - Add WHERE <filter_condition> to the upstream CTE
+   - Translate IIF/ISNULL using same rules as Expression above
+
+8. Joiner
+   - MASTER side = left table (already in FROM)
+   - DETAIL side = right table: JOIN `@{PROJECT_ID}.@{DATASET}.<detail>` ON <condition>
+
+9. Sequence Generator
+   - NEXTVAL -> ROW_NUMBER() OVER (ORDER BY (SELECT NULL))
+   - CURRVAL -> ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1
+
+STRUCTURE:
+- Use WITH (CTE) chaining to represent the transformation pipeline in order
+- Name each CTE after the transformation step: cte_SQ_..., cte_EXP_..., cte_LKP_..., etc.
+- Final SELECT or MERGE/INSERT writes to the target table
+- Add Pre SQL as a separate statement before the main query (commented -- PRE_SQL)
+- Add Post SQL as a separate statement after (commented -- POST_SQL)
+
+PARAMETERS:
+- Replace $$PARAM_NAME -> @PARAM_NAME everywhere
+- List all parameters used in a header comment block
+
+TIMEZONE:
+- All CURRENT_TIMESTAMP() and CURRENT_DATETIME() calls must be wrapped:
+    TIMESTAMP(CURRENT_DATETIME(), 'America/New_York')
+- Timestamp literals must include timezone context
+
+OUTPUT FORMAT:
+Return ONLY the SQL file content. No explanation text outside the SQL.
+Start with:
+  -- Mapping: <mapping_name>
+  -- Generated from Informatica Knowledge Graph
+  -- Parameters: @PARAM1, @PARAM2 (or "none" if no params)
+  --
+  -- Source: <source_table(s)>
+  -- Target: <target_table>
+
+For anything that cannot be converted:
+  -- TODO: <reason> — manual review required
+
+========================================================================
+USER MESSAGE  (subgraph JSON)
+========================================================================
+{
+  "subgraph": {
+    "mapping_name": "m_ODS_EDM_SSP_FINC_LOB_DIM_V1",
+    "description": "",
+    "sources": [
+      {
+        "name": "SSP_STG_OSF_L2_CUST_MSTR",
+        "db_type": "Teradata",
+        "owner": "SSP_STG",
+        "fields": [
+          {
+            "name": "CUST_ACCT_ID",
+            "datatype": "decimal",
+            "precision": "12",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "EXTNL_CPF_ACCT_ID",
+            "datatype": "decimal",
+            "precision": "12",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "EXTNL_BLG_ACCT_ID",
+            "datatype": "decimal",
+            "precision": "12",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "CUST_BLG_ACCT_NO",
+            "datatype": "varchar",
+            "precision": "50",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "HOA_ACCT_ID",
+            "datatype": "varchar",
+            "precision": "21",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "FTTP_HOA_TYPE_ID",
+            "datatype": "integer",
+            "precision": "10",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "BLG_TEL_NO",
+            "datatype": "varchar",
+            "precision": "10",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "BLG_ACCT_NO",
+            "datatype": "varchar",
+            "precision": "50",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "CUST_ACCT_NO",
+            "datatype": "varchar",
+            "precision": "10",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "CUST_FIRST_NM",
+            "datatype": "varchar",
+            "precision": "64",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "CUST_MID_INIT_NM",
+            "datatype": "varchar",
+            "precision": "20",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "CUST_LAST_NM",
+            "datatype": "varchar",
+            "precision": "64",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "CUST_CMPY_NM",
+            "datatype": "varchar",
+            "precision": "64",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "LOB_ID",
+            "datatype": "decimal",
+            "precision": "12",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "CNTCT_TEL_NO",
+            "datatype": "varchar",
+            "precision": "10",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "EMAIL_INFO",
+            "datatype": "varchar",
+            "precision": "60",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "CUST_MGRTN_DT",
+            "datatype": "timestamp",
+            "precision": "26",
+            "scale": "6",
+            "nullable": "NULL"
+          },
+          {
+            "name": "ORD_MSTR_ID",
+            "datatype": "decimal",
+            "precision": "12",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "CRV_NUMBER",
+            "datatype": "varchar",
+            "precision": "30",
+            "scale": "0",
+            "nullable": "NULL"
+          },
+          {
+            "name": "FNCL_LOB_ID",
+            "datatype": "varchar",
+            "precision": "10",
+            "scale": "0",
+            "nullable": "NULL"
+          }
+        ]
+      }
+    ],
+    "targets": [
+      {
+        "name": "SSP_FINC_LOB_DIM_V1",
+        "db_type": "Microsoft SQL Server",
+        "fields": [
+          {
+            "name": "SSP_FINC_LOB_DIM_Key",
+            "datatype": "int",
+            "precision": "10",
+            "scale": "0"
+          },
+          {
+            "name": "IsCurrent",
+            "datatype": "bit",
+            "precision": "1",
+            "scale": "0"
+          },
+          {
+            "name": "SourceSystemID",
+            "datatype": "int",
+            "precision": "10",
+            "scale": "0"
+          },
+          {
+            "name": "FINC_LOB_CD",
+            "datatype": "varchar",
+            "precision": "10",
+            "scale": "0"
+          },
+          {
+            "name": "FINC_LOB_ARBR_CD",
+            "datatype": "varchar",
+            "precision": "10",
+            "scale": "0"
+          },
+          {
+            "name": "FINC_LOB_NM",
+            "datatype": "varchar",
+            "precision": "250",
+            "scale": "0"
+          },
+          {
+            "name": "FINC_LOB_BUS_NM",
+            "datatype": "varchar",
+            "precision": "250",
+            "scale": "0"
+          },
+          {
+            "name": "FINC_LOB_BUS_NM_UAT",
+            "datatype": "varchar",
+            "precision": "250",
+            "scale": "0"
+          },
+          {
+            "name": "FINC_LOB_HRCHY_ID",
+            "datatype": "varchar",
+            "precision": "250",
+            "scale": "0"
+          },
+          {
+            "name": "ACTV_DT",
+            "datatype": "datetime",
+            "precision": "23",
+            "scale": "3"
+          },
+          {
+            "name": "INACTV_DT",
+            "datatype": "datetime",
+            "precision": "23",
+            "scale": "3"
+          },
+          {
+            "name": "IS_ACTV_IND",
+            "datatype": "varchar",
+            "precision": "1",
+            "scale": "0"
+          },
+          {
+            "name": "DIM_SRC_CD",
+            "datatype": "varchar",
+            "precision": "10",
+            "scale": "0"
+          },
+          {
+            "name": "DIM_LAST_MDFD_DT",
+            "datatype": "datetime",
+            "precision": "23",
+            "scale": "3"
+          },
+          {
+            "name": "FINC_LOB_HRCHY_LVL1",
+            "datatype": "varchar",
+            "precision": "250",
+            "scale": "0"
+          },
+          {
+            "name": "FINC_LOB_HRCHY_LVL2",
+            "datatype": "varchar",
+            "precision": "250",
+            "scale": "0"
+          },
+          {
+            "name": "FINC_LOB_HRCHY_LVL3",
+            "datatype": "varchar",
+            "precision": "250",
+            "scale": "0"
+          }
+        ]
+      }
+    ],
+    "pipeline": [
+      {
+        "name": "SQ_SSP_STG_OSF_L2_CUST_MSTR",
+        "type": "Source Qualifier",
+        "fields": [
+          {
+            "name": "FNCL_LOB_ID",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "CUST_ACCT_ID",
+            "datatype": "decimal",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "EXTNL_CPF_ACCT_ID",
+            "datatype": "decimal",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "EXTNL_BLG_ACCT_ID",
+            "datatype": "decimal",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "CUST_BLG_ACCT_NO",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "HOA_ACCT_ID",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FTTP_HOA_TYPE_ID",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "BLG_TEL_NO",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "BLG_ACCT_NO",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "CUST_ACCT_NO",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "CUST_FIRST_NM",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "CUST_MID_INIT_NM",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "CUST_LAST_NM",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "CUST_CMPY_NM",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "LOB_ID",
+            "datatype": "decimal",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "CNTCT_TEL_NO",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "EMAIL_INFO",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "CUST_MGRTN_DT",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "ORD_MSTR_ID",
+            "datatype": "decimal",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "CRV_NUMBER",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          }
+        ],
+        "groups": [],
+        "sql_override": null,
+        "source_filter": "SSP_STG_OSF_L2_CUST_MSTR.FNCL_LOB_ID IS NOT NULL",
+        "lookup_table": null,
+        "lookup_condition": null,
+        "filter_condition": null,
+        "update_strategy_expr": null,
+        "select_distinct": true
+      },
+      {
+        "name": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "type": "Expression",
+        "fields": [
+          {
+            "name": "FNCL_LOB_ID",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "IsCurrent",
+            "datatype": "integer",
+            "expression": "1",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "SRCSYSID",
+            "datatype": "integer",
+            "expression": "1",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_ARBR_CD",
+            "datatype": "string",
+            "expression": "'ARBOR'",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_NM",
+            "datatype": "string",
+            "expression": "'UNKNOWN'",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_BUS_NM",
+            "datatype": "string",
+            "expression": "'UNKNOWN'",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_BUS_NM_UAT",
+            "datatype": "string",
+            "expression": "'UNKNOWN'",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_HRCHY_ID",
+            "datatype": "string",
+            "expression": "'UNKNOWN'",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "ACTV_DT",
+            "datatype": "date/time",
+            "expression": "SESSSTARTTIME",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "INACTV_DT",
+            "datatype": "date/time",
+            "expression": "TO_DATE('31-DEC-9999', 'DD-MON-YYYY')",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "IS_ACTV_IND",
+            "datatype": "string",
+            "expression": "'Y'",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "DIM_SRC_CD",
+            "datatype": "string",
+            "expression": "'ODS'",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "DIM_LAST_MDFD_DT",
+            "datatype": "date/time",
+            "expression": "SESSSTARTTIME",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_HRCHY_LVL",
+            "datatype": "string",
+            "expression": "'UNKNOWN'",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": ""
+          }
+        ],
+        "groups": [],
+        "sql_override": null,
+        "source_filter": null,
+        "lookup_table": null,
+        "lookup_condition": null,
+        "filter_condition": null,
+        "update_strategy_expr": null,
+        "select_distinct": false
+      },
+      {
+        "name": "LKP_SSP_FINC_LOB_DIM_V1",
+        "type": "Lookup Procedure",
+        "fields": [
+          {
+            "name": "SSP_FINC_LOB_DIM_Key",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "LOOKUP/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_CD",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "LOOKUP",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FNCL_LOB_ID",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          }
+        ],
+        "groups": [],
+        "sql_override": null,
+        "source_filter": null,
+        "lookup_table": "SSP_FINC_LOB_DIM_V1",
+        "lookup_condition": "FINC_LOB_CD = FNCL_LOB_ID",
+        "filter_condition": null,
+        "update_strategy_expr": null,
+        "select_distinct": false
+      },
+      {
+        "name": "RTR_INSERT_UPDATE",
+        "type": "Router",
+        "fields": [
+          {
+            "name": "SSP_FINC_LOB_CD_DIM_Key",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "IsCurrent",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "SRCSYSID",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FNCL_LOB_ID",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_ARBR_CD",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_NM",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_BUS_NM",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_BUS_NM_UAT",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_HRCHY_ID",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "ACTV_DT",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "INACTV_DT",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "IS_ACTV_IND",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "DIM_SRC_CD",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "DIM_LAST_MDFD_DT",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_HRCHY_LVL",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "SSP_FINC_LOB_CD_DIM_Key1",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "SSP_FINC_LOB_CD_DIM_Key"
+          },
+          {
+            "name": "IsCurrent1",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "IsCurrent"
+          },
+          {
+            "name": "SRCSYSID1",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "SRCSYSID"
+          },
+          {
+            "name": "FNCL_LOB_ID1",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FNCL_LOB_ID"
+          },
+          {
+            "name": "FINC_LOB_ARBR_CD1",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_ARBR_CD"
+          },
+          {
+            "name": "FINC_LOB_NM1",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_NM"
+          },
+          {
+            "name": "FINC_LOB_BUS_NM1",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_BUS_NM"
+          },
+          {
+            "name": "FINC_LOB_BUS_NM_UAT1",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_BUS_NM_UAT"
+          },
+          {
+            "name": "FINC_LOB_HRCHY_ID1",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_HRCHY_ID"
+          },
+          {
+            "name": "ACTV_DT1",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "ACTV_DT"
+          },
+          {
+            "name": "INACTV_DT1",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "INACTV_DT"
+          },
+          {
+            "name": "IS_ACTV_IND1",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "IS_ACTV_IND"
+          },
+          {
+            "name": "DIM_SRC_CD1",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "DIM_SRC_CD"
+          },
+          {
+            "name": "DIM_LAST_MDFD_DT1",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "DIM_LAST_MDFD_DT"
+          },
+          {
+            "name": "FINC_LOB_HRCHY_LVL1",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_HRCHY_LVL"
+          },
+          {
+            "name": "SSP_FINC_LOB_CD_DIM_Key3",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "SSP_FINC_LOB_CD_DIM_Key"
+          },
+          {
+            "name": "IsCurrent3",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "IsCurrent"
+          },
+          {
+            "name": "SRCSYSID3",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "SRCSYSID"
+          },
+          {
+            "name": "FNCL_LOB_ID3",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FNCL_LOB_ID"
+          },
+          {
+            "name": "FINC_LOB_ARBR_CD3",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_ARBR_CD"
+          },
+          {
+            "name": "FINC_LOB_NM3",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_NM"
+          },
+          {
+            "name": "FINC_LOB_BUS_NM3",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_BUS_NM"
+          },
+          {
+            "name": "FINC_LOB_BUS_NM_UAT3",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_BUS_NM_UAT"
+          },
+          {
+            "name": "FINC_LOB_HRCHY_ID3",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_HRCHY_ID"
+          },
+          {
+            "name": "ACTV_DT3",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "ACTV_DT"
+          },
+          {
+            "name": "INACTV_DT3",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "INACTV_DT"
+          },
+          {
+            "name": "IS_ACTV_IND3",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "IS_ACTV_IND"
+          },
+          {
+            "name": "DIM_SRC_CD3",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "DIM_SRC_CD"
+          },
+          {
+            "name": "DIM_LAST_MDFD_DT3",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "DIM_LAST_MDFD_DT"
+          },
+          {
+            "name": "FINC_LOB_HRCHY_LVL3",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_HRCHY_LVL"
+          },
+          {
+            "name": "SSP_FINC_LOB_CD_DIM_Key2",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "SSP_FINC_LOB_CD_DIM_Key"
+          },
+          {
+            "name": "IsCurrent2",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "IsCurrent"
+          },
+          {
+            "name": "SRCSYSID2",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "SRCSYSID"
+          },
+          {
+            "name": "FNCL_LOB_ID2",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FNCL_LOB_ID"
+          },
+          {
+            "name": "FINC_LOB_ARBR_CD2",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_ARBR_CD"
+          },
+          {
+            "name": "FINC_LOB_NM2",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_NM"
+          },
+          {
+            "name": "FINC_LOB_BUS_NM2",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_BUS_NM"
+          },
+          {
+            "name": "FINC_LOB_BUS_NM_UAT2",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_BUS_NM_UAT"
+          },
+          {
+            "name": "FINC_LOB_HRCHY_ID2",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_HRCHY_ID"
+          },
+          {
+            "name": "ACTV_DT2",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "ACTV_DT"
+          },
+          {
+            "name": "INACTV_DT2",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "INACTV_DT"
+          },
+          {
+            "name": "IS_ACTV_IND2",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "IS_ACTV_IND"
+          },
+          {
+            "name": "DIM_SRC_CD2",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "DIM_SRC_CD"
+          },
+          {
+            "name": "DIM_LAST_MDFD_DT2",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "DIM_LAST_MDFD_DT"
+          },
+          {
+            "name": "FINC_LOB_HRCHY_LVL2",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "OUTPUT",
+            "group": "",
+            "ref_field": "FINC_LOB_HRCHY_LVL"
+          }
+        ],
+        "groups": [],
+        "sql_override": null,
+        "source_filter": null,
+        "lookup_table": null,
+        "lookup_condition": null,
+        "filter_condition": null,
+        "update_strategy_expr": null,
+        "select_distinct": false
+      },
+      {
+        "name": "UPDT_FINC_LOB_DIM_V1",
+        "type": "Update Strategy",
+        "fields": [
+          {
+            "name": "SSP_FINC_LOB_CD_DIM_Key",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "IsCurrent",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "SRCSYSID",
+            "datatype": "integer",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_ARBR_CD",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_NM",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_BUS_NM",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_BUS_NM_UAT",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_HRCHY_ID",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "ACTV_DT",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "INACTV_DT",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "IS_ACTV_IND",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "DIM_SRC_CD",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "DIM_LAST_MDFD_DT",
+            "datatype": "date/time",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          },
+          {
+            "name": "FINC_LOB_HRCHY_LVL",
+            "datatype": "string",
+            "expression": "",
+            "expression_type": "",
+            "port_type": "INPUT/OUTPUT",
+            "group": "",
+            "ref_field": ""
+          }
+        ],
+        "groups": [],
+        "sql_override": null,
+        "source_filter": null,
+        "lookup_table": null,
+        "lookup_condition": null,
+        "filter_condition": null,
+        "update_strategy_expr": "DD_UPDATE",
+        "select_distinct": false
+      }
+    ],
+    "field_lineage": [
+      {
+        "from_field": "FNCL_LOB_ID",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "FNCL_LOB_ID",
+        "to_instance": "LKP_SSP_FINC_LOB_DIM_V1",
+        "to_type": "Lookup Procedure"
+      },
+      {
+        "from_field": "IsCurrent",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "IsCurrent",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "SRCSYSID",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "SRCSYSID",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "FNCL_LOB_ID",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "FNCL_LOB_ID",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "FINC_LOB_ARBR_CD",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "FINC_LOB_ARBR_CD",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "FINC_LOB_NM",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "FINC_LOB_NM",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "FINC_LOB_BUS_NM",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "FINC_LOB_BUS_NM",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "FINC_LOB_BUS_NM_UAT",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "FINC_LOB_BUS_NM_UAT",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_ID",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "FINC_LOB_HRCHY_ID",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "ACTV_DT",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "ACTV_DT",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "INACTV_DT",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "INACTV_DT",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "IS_ACTV_IND",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "IS_ACTV_IND",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "DIM_SRC_CD",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "DIM_SRC_CD",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "DIM_LAST_MDFD_DT",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "DIM_LAST_MDFD_DT",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_LVL",
+        "from_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Expression",
+        "to_field": "FINC_LOB_HRCHY_LVL",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "FNCL_LOB_ID",
+        "from_instance": "SQ_SSP_STG_OSF_L2_CUST_MSTR",
+        "from_type": "Source Qualifier",
+        "to_field": "FNCL_LOB_ID",
+        "to_instance": "EXP_SSP_STG_OSF_L2_CUST_MSTR",
+        "to_type": "Expression"
+      },
+      {
+        "from_field": "SSP_FINC_LOB_DIM_Key",
+        "from_instance": "LKP_SSP_FINC_LOB_DIM_V1",
+        "from_type": "Lookup Procedure",
+        "to_field": "SSP_FINC_LOB_CD_DIM_Key",
+        "to_instance": "RTR_INSERT_UPDATE",
+        "to_type": "Router"
+      },
+      {
+        "from_field": "SSP_FINC_LOB_CD_DIM_Key3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "SSP_FINC_LOB_CD_DIM_Key",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "IsCurrent3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "IsCurrent",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "SRCSYSID3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "SRCSYSID",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "FINC_LOB_ARBR_CD3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_ARBR_CD",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "FINC_LOB_NM3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_NM",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "FINC_LOB_BUS_NM3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_BUS_NM",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "FINC_LOB_BUS_NM_UAT3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_BUS_NM_UAT",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_ID3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_HRCHY_ID",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "ACTV_DT3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "ACTV_DT",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "INACTV_DT3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "INACTV_DT",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "IS_ACTV_IND3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "IS_ACTV_IND",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "DIM_SRC_CD3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "DIM_SRC_CD",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "DIM_LAST_MDFD_DT3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "DIM_LAST_MDFD_DT",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_LVL3",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_HRCHY_LVL",
+        "to_instance": "UPDT_FINC_LOB_DIM_V1",
+        "to_type": "Update Strategy"
+      }
+    ],
+    "parameters": []
+  },
+  "context_layer": {
+    "function_map": {
+      "IIF": "IF(cond, a, b)",
+      "ISNULL": "x IS NULL",
+      "DECODE": "CASE WHEN ... THEN ... ELSE ... END",
+      "NVL": "COALESCE(x, fallback)",
+      "NVL2": "IF(x IS NOT NULL, a, b)",
+      "TO_DATE": "DATE '9999-12-31'  (or PARSE_DATE)",
+      "TO_CHAR": "FORMAT_DATETIME(fmt, d)",
+      "DATE_DIFF": "TIMESTAMP_DIFF(a, b, MONTH)",
+      "ADD_MONTHS": "DATE_ADD(d, INTERVAL n MONTH)",
+      "SESSSTARTTIME": "CURRENT_TIMESTAMP()",
+      "SYSDATE": "CURRENT_DATETIME()",
+      "LAST_DAY": "DATE_SUB(DATE_TRUNC(DATE_ADD(d,INTERVAL 1 MONTH),MONTH),INTERVAL 1 DAY)",
+      "TRUNC": "TRUNC(x) or DATE_TRUNC(d, MONTH)",
+      "INSTR": "STRPOS(s, sub)",
+      "SUBSTR": "SUBSTR(s, start, length)",
+      "LENGTH": "LENGTH(x)",
+      "LTRIM": "LTRIM(x)",
+      "RTRIM": "RTRIM(x)",
+      "TRIM": "TRIM(x)",
+      "UPPER": "UPPER(x)",
+      "LOWER": "LOWER(x)",
+      "LPAD": "LPAD(s, len, pad)",
+      "RPAD": "RPAD(s, len, pad)",
+      "CONCAT": "CONCAT(a, b)",
+      "MOD": "MOD(a, b)",
+      "ABS": "ABS(x)",
+      "GREATEST": "GREATEST(a, b, ...)",
+      "LEAST": "LEAST(a, b, ...)",
+      "ROUND": "ROUND(x, d)",
+      "FLOOR": "FLOOR(x)",
+      "CEIL": "CEIL(x)",
+      "POWER": "POWER(b, e)",
+      "SQRT": "SQRT(x)",
+      "SIGN": "SIGN(x)",
+      "REG_EXTRACT": "REGEXP_EXTRACT(s, r)",
+      "REG_REPLACE": "REGEXP_REPLACE(s, r, repl)",
+      "IN": "x IN (a, b, ...)",
+      "LIKE": "x LIKE 'pattern'"
+    },
+    "datatype_map": {
+      "string": "STRING",
+      "nstring": "STRING",
+      "char": "STRING",
+      "nchar": "STRING",
+      "varchar": "STRING",
+      "nvarchar": "STRING",
+      "text": "STRING",
+      "integer": "INT64",
+      "int": "INT64",
+      "smallint": "INT64",
+      "bigint": "INT64",
+      "number": "NUMERIC",
+      "decimal": "NUMERIC",
+      "float": "FLOAT64",
+      "double": "FLOAT64",
+      "real": "FLOAT64",
+      "date/time": "TIMESTAMP",
+      "date": "DATE",
+      "time": "TIME",
+      "timestamp": "TIMESTAMP",
+      "binary": "BYTES",
+      "bit": "BOOL"
+    },
+    "transform_patterns": {
+      "Source Qualifier": {
+        "cte_prefix": "cte_SQ_",
+        "base_table": "`@{PROJECT_ID}.@{DATASET}.<table_name>`",
+        "distinct_support": true,
+        "filter_support": true,
+        "sql_override_support": true
+      },
+      "Expression": {
+        "cte_prefix": "cte_EXP_",
+        "output_ports": "computed SELECT aliases",
+        "input_ports": "pass-through columns",
+        "variable_ports": "intermediate CTE columns"
+      },
+      "Lookup Procedure": {
+        "cte_prefix": "cte_LKP_",
+        "join_type": "LEFT JOIN",
+        "lookup_table": "`@{PROJECT_ID}.@{DATASET}.<lookup_table>`"
+      },
+      "Router": {
+        "cte_prefix": "cte_RTR_",
+        "generates_multiple_output_groups": true,
+        "combine_with_UpdateStrategy": "MERGE statement"
+      },
+      "Update Strategy": {
+        "cte_prefix": "cte_UPD_",
+        "DD_INSERT": "INSERT INTO",
+        "DD_UPDATE": "WHEN MATCHED THEN UPDATE SET",
+        "DD_DELETE": "WHEN MATCHED THEN DELETE",
+        "DD_REJECT": "-- TODO: rejected rows"
+      },
+      "Aggregator": {
+        "cte_prefix": "cte_AGG_",
+        "group_by_ports": "fields with expression_type=GROUPBY",
+        "aggregate_ports": "fields with aggregate expressions"
+      },
+      "Filter": {
+        "cte_prefix": "cte_FIL_",
+        "adds_where_clause": true
+      },
+      "Joiner": {
+        "cte_prefix": "cte_JNR_",
+        "master_side": "left / FROM",
+        "detail_side": "right / JOIN"
+      },
+      "Sequence Generator": {
+        "cte_prefix": "cte_SEQ_",
+        "NEXTVAL": "ROW_NUMBER() OVER (ORDER BY (SELECT NULL))",
+        "CURRVAL": "ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1"
+      }
+    }
+  }
+}
+
+========================================================================
+Approximate character count — system: 6,001  user: 49,240
+========================================================================
