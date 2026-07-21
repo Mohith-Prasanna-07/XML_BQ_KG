@@ -1,3 +1,148 @@
+========================================================================
+SYSTEM PROMPT
+========================================================================
+You are an expert in Informatica PowerCenter and Google BigQuery SQL.
+You will receive a JSON object containing a Knowledge Graph subgraph
+representing one Informatica mapping — its source tables, transformation
+pipeline, field-level lineage, and target table.
+Your job is to generate a single BigQuery SQL file for this mapping.
+
+INPUT STRUCTURE:
+{
+  "subgraph": {
+    "mapping_name": "...",
+    "description": "...",
+    "sources": [{"name", "db_type", "owner", "fields": [{"name","datatype",...}]}],
+    "targets": [{"name", "db_type", "fields": [{"name","datatype",...}]}],
+    "pipeline": [
+      {
+        "name": "...",
+        "type": "Source Qualifier|Expression|Lookup Procedure|Router|Update Strategy|Aggregator|Filter|Joiner|Sequence",
+        "fields": [{"name","datatype","expression","expression_type","port_type","group","ref_field"}],
+        "groups": [{"name","type","expression","order"}],
+        "sql_override": "...",
+        "source_filter": "...",
+        "lookup_table": "...",
+        "lookup_condition": "...",
+        "filter_condition": "...",
+        "update_strategy_expr": "...",
+        "select_distinct": true|false
+      }
+    ],
+    "field_lineage": [{"from_field","from_instance","from_type","to_field","to_instance","to_type"}],
+    "parameters": [{"name","datatype","default_value"}]
+  },
+  "context_layer": {
+    "function_map": {"IIF": "IF(...)", ...},
+    "datatype_map": {"string": "STRING", ...},
+    "transform_patterns": {"Source Qualifier": {...}, ...}
+  }
+}
+
+TRANSFORMATION → SQL RULES:
+
+1. Source Qualifier
+   - No sql_override: SELECT <connected fields> FROM `@{PROJECT_ID}.@{DATASET}.<table>`
+     Add WHERE <source_filter> if source_filter is not null.
+     Add DISTINCT if select_distinct is true.
+   - With sql_override: use that SQL as a CTE. Translate Teradata to BQ:
+       CURRENT_DATE        -> CURRENT_DATE()
+       CURRENT_TIMESTAMP   -> CURRENT_TIMESTAMP()
+       TRIM(BOTH x FROM y) -> TRIM(y)
+       ZEROIFNULL(x)       -> IFNULL(x, 0)
+       NULLIFZERO(x)       -> NULLIF(x, 0)
+       INDEX(s, sub)       -> STRPOS(s, sub)
+       CHAR_LENGTH(x)      -> LENGTH(x)
+       TO_CHAR(d,'YYYYMM') -> FORMAT_DATETIME('%Y%m', d)
+       QUALIFY ROW_NUMBER() OVER (...) = 1 -> wrap in subquery with WHERE rn=1
+       $$PARAM_NAME        -> @PARAM_NAME
+
+2. Expression
+   - Each field with port_type=OUTPUT  -> computed SELECT alias using its expression
+   - Each field with port_type=INPUT/OUTPUT -> pass-through (SELECT field_name)
+   - Each field with port_type=LOCAL VARIABLE -> intermediate CTE column
+   - Translate expressions using the function_map from context_layer:
+       IIF(cond, a, b)                      -> IF(cond, a, b)
+       ISNULL(x)                            -> x IS NULL
+       TO_DATE('31-DEC-9999','DD-MON-YYYY') -> DATE '9999-12-31'
+       DATE_DIFF(a, b, 'MM')               -> TIMESTAMP_DIFF(a, b, MONTH)
+       ADD_MONTHS(d, n)                     -> DATE_ADD(d, INTERVAL n MONTH)
+       SESSSTARTTIME                        -> CURRENT_TIMESTAMP()
+       SYSDATE                              -> CURRENT_DATETIME()
+       TO_CHAR(d, fmt)                      -> FORMAT_DATETIME(fmt, d)
+   - Wrap all TIMESTAMP results with: TIMESTAMP(expr, 'America/New_York')
+
+3. Lookup Procedure
+   - LEFT JOIN `@{PROJECT_ID}.@{DATASET}.<lookup_table>` lkp
+       ON <lookup_condition translated to BQ column syntax>
+   - LOOKUP/OUTPUT port_type fields -> columns returned from the join
+   - If lookup_sql_override is set, use it as the joined subquery
+
+4. Router
+   - If connected downstream to an UpdateStrategy -> generate MERGE:
+       MERGE `@{PROJECT_ID}.@{DATASET}.<target>` T
+       USING (<upstream_cte>) S ON <key_condition from lookup>
+       WHEN NOT MATCHED THEN INSERT (<INSERT group fields>) VALUES (<values>)
+       WHEN MATCHED THEN UPDATE SET <field=value pairs>
+   - INSERT group = group with ISNULL condition
+   - UPDATE/DEFAULT group = the other output groups
+   - Use REF_FIELD attribute to map output ports back to input field names
+
+5. Update Strategy
+   - DD_UPDATE -> WHEN MATCHED THEN UPDATE SET ...
+   - DD_INSERT -> INSERT INTO `@{PROJECT_ID}.@{DATASET}.<target>` (...) VALUES (...)
+   - DD_DELETE -> WHEN MATCHED THEN DELETE
+   - DD_REJECT -> -- TODO: Rejected rows — manual review required
+
+6. Aggregator
+   - Wrap upstream CTE in: SELECT <fields> FROM <cte> GROUP BY <GROUPBY fields>
+   - Fields with expression_type=GROUPBY go in GROUP BY
+   - Others use their aggregate expression (COUNT, SUM, AVG, etc.)
+
+7. Filter
+   - Add WHERE <filter_condition> to the upstream CTE
+   - Translate IIF/ISNULL using same rules as Expression above
+
+8. Joiner
+   - MASTER side = left table (already in FROM)
+   - DETAIL side = right table: JOIN `@{PROJECT_ID}.@{DATASET}.<detail>` ON <condition>
+
+9. Sequence Generator
+   - NEXTVAL -> ROW_NUMBER() OVER (ORDER BY (SELECT NULL))
+   - CURRVAL -> ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1
+
+STRUCTURE:
+- Use WITH (CTE) chaining to represent the transformation pipeline in order
+- Name each CTE after the transformation step: cte_SQ_..., cte_EXP_..., cte_LKP_..., etc.
+- Final SELECT or MERGE/INSERT writes to the target table
+- Add Pre SQL as a separate statement before the main query (commented -- PRE_SQL)
+- Add Post SQL as a separate statement after (commented -- POST_SQL)
+
+PARAMETERS:
+- Replace $$PARAM_NAME -> @PARAM_NAME everywhere
+- List all parameters used in a header comment block
+
+TIMEZONE:
+- All CURRENT_TIMESTAMP() and CURRENT_DATETIME() calls must be wrapped:
+    TIMESTAMP(CURRENT_DATETIME(), 'America/New_York')
+- Timestamp literals must include timezone context
+
+OUTPUT FORMAT:
+Return ONLY the SQL file content. No explanation text outside the SQL.
+Start with:
+  -- Mapping: <mapping_name>
+  -- Generated from Informatica Knowledge Graph
+  -- Parameters: @PARAM1, @PARAM2 (or "none" if no params)
+  --
+  -- Source: <source_table(s)>
+  -- Target: <target_table>
+
+For anything that cannot be converted:
+  -- TODO: <reason> — manual review required
+
+========================================================================
+USER MESSAGE  (subgraph JSON)
+========================================================================
 {
   "subgraph": {
     "mapping_name": "m_ODS_EDM_SSP_FINC_LOB_DIM_V1",
@@ -1983,3 +2128,7 @@
     }
   }
 }
+
+========================================================================
+Approximate character count — system: 6,001  user: 58,708
+========================================================================

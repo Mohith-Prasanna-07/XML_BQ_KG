@@ -495,7 +495,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -504,7 +504,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -513,7 +513,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -522,7 +522,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -531,7 +531,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -540,7 +540,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -549,7 +549,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -558,7 +558,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -567,7 +567,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -576,7 +576,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -585,7 +585,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -594,7 +594,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -603,7 +603,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -612,7 +612,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -621,7 +621,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -630,7 +630,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -639,7 +639,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -648,7 +648,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -657,7 +657,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -666,7 +666,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -675,7 +675,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "INPUT",
-            "group": "",
+            "group": "INPUT",
             "ref_field": ""
           },
           {
@@ -684,7 +684,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "FINC_LOB_CD_SK"
           },
           {
@@ -693,7 +693,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "SSP_FINC_LOB_DIM_Key"
           },
           {
@@ -702,7 +702,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "StartDate"
           },
           {
@@ -711,7 +711,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "EndDate"
           },
           {
@@ -720,7 +720,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "IsCurrent"
           },
           {
@@ -729,7 +729,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "SourceSystemKey"
           },
           {
@@ -738,7 +738,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "SourceSystemID"
           },
           {
@@ -747,7 +747,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "FINC_LOB_CD"
           },
           {
@@ -756,7 +756,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "FINC_LOB_ARBR_CD"
           },
           {
@@ -765,7 +765,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "FINC_LOB_NM"
           },
           {
@@ -774,7 +774,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "FINC_LOB_BUS_NM"
           },
           {
@@ -783,7 +783,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "FINC_LOB_BUS_NM_UAT"
           },
           {
@@ -792,7 +792,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "FINC_LOB_HRCHY_ID"
           },
           {
@@ -801,7 +801,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "ACTV_DT"
           },
           {
@@ -810,7 +810,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "INACTV_DT"
           },
           {
@@ -819,7 +819,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "IS_ACTV_IND"
           },
           {
@@ -828,7 +828,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "DIM_SRC_CD"
           },
           {
@@ -837,7 +837,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "DIM_LAST_MDFD_DT"
           },
           {
@@ -846,7 +846,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "FINC_LOB_HRCHY_LVL1"
           },
           {
@@ -855,7 +855,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "FINC_LOB_HRCHY_LVL2"
           },
           {
@@ -864,7 +864,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "INSGRP",
             "ref_field": "FINC_LOB_HRCHY_LVL3"
           },
           {
@@ -873,7 +873,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "FINC_LOB_CD_SK"
           },
           {
@@ -882,7 +882,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "SSP_FINC_LOB_DIM_Key"
           },
           {
@@ -891,7 +891,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "StartDate"
           },
           {
@@ -900,7 +900,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "EndDate"
           },
           {
@@ -909,7 +909,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "IsCurrent"
           },
           {
@@ -918,7 +918,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "SourceSystemKey"
           },
           {
@@ -927,7 +927,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "SourceSystemID"
           },
           {
@@ -936,7 +936,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "FINC_LOB_CD"
           },
           {
@@ -945,7 +945,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "FINC_LOB_ARBR_CD"
           },
           {
@@ -954,7 +954,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "FINC_LOB_NM"
           },
           {
@@ -963,7 +963,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "FINC_LOB_BUS_NM"
           },
           {
@@ -972,7 +972,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "FINC_LOB_BUS_NM_UAT"
           },
           {
@@ -981,7 +981,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "FINC_LOB_HRCHY_ID"
           },
           {
@@ -990,7 +990,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "ACTV_DT"
           },
           {
@@ -999,7 +999,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "INACTV_DT"
           },
           {
@@ -1008,7 +1008,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "IS_ACTV_IND"
           },
           {
@@ -1017,7 +1017,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "DIM_SRC_CD"
           },
           {
@@ -1026,7 +1026,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "DIM_LAST_MDFD_DT"
           },
           {
@@ -1035,7 +1035,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "FINC_LOB_HRCHY_LVL1"
           },
           {
@@ -1044,7 +1044,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "FINC_LOB_HRCHY_LVL2"
           },
           {
@@ -1053,7 +1053,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "UPDGRP",
             "ref_field": "FINC_LOB_HRCHY_LVL3"
           },
           {
@@ -1062,7 +1062,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "FINC_LOB_CD_SK"
           },
           {
@@ -1071,7 +1071,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "SSP_FINC_LOB_DIM_Key"
           },
           {
@@ -1080,7 +1080,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "StartDate"
           },
           {
@@ -1089,7 +1089,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "EndDate"
           },
           {
@@ -1098,7 +1098,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "IsCurrent"
           },
           {
@@ -1107,7 +1107,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "SourceSystemKey"
           },
           {
@@ -1116,7 +1116,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "SourceSystemID"
           },
           {
@@ -1125,7 +1125,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "FINC_LOB_CD"
           },
           {
@@ -1134,7 +1134,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "FINC_LOB_ARBR_CD"
           },
           {
@@ -1143,7 +1143,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "FINC_LOB_NM"
           },
           {
@@ -1152,7 +1152,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "FINC_LOB_BUS_NM"
           },
           {
@@ -1161,7 +1161,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "FINC_LOB_BUS_NM_UAT"
           },
           {
@@ -1170,7 +1170,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "FINC_LOB_HRCHY_ID"
           },
           {
@@ -1179,7 +1179,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "ACTV_DT"
           },
           {
@@ -1188,7 +1188,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "INACTV_DT"
           },
           {
@@ -1197,7 +1197,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "IS_ACTV_IND"
           },
           {
@@ -1206,7 +1206,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "DIM_SRC_CD"
           },
           {
@@ -1215,7 +1215,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "DIM_LAST_MDFD_DT"
           },
           {
@@ -1224,7 +1224,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "FINC_LOB_HRCHY_LVL1"
           },
           {
@@ -1233,7 +1233,7 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "FINC_LOB_HRCHY_LVL2"
           },
           {
@@ -1242,11 +1242,36 @@
             "expression": "",
             "expression_type": "",
             "port_type": "OUTPUT",
-            "group": "",
+            "group": "DEFAULT1",
             "ref_field": "FINC_LOB_HRCHY_LVL3"
           }
         ],
-        "groups": [],
+        "groups": [
+          {
+            "name": "INPUT",
+            "group_type": "INPUT",
+            "condition": "",
+            "order": 1
+          },
+          {
+            "name": "INSGRP",
+            "group_type": "OUTPUT",
+            "condition": "ISNULL(FINC_LOB_CD_SK)",
+            "order": 2
+          },
+          {
+            "name": "UPDGRP",
+            "group_type": "OUTPUT",
+            "condition": "IIF(NOT ISNULL(FINC_LOB_CD_SK),TRUE,FALSE)",
+            "order": 3
+          },
+          {
+            "name": "DEFAULT1",
+            "group_type": "OUTPUT/DEFAULT",
+            "condition": "",
+            "order": 4
+          }
+        ],
         "sql_override": null,
         "source_filter": null,
         "lookup_table": null,
@@ -1803,6 +1828,246 @@
         "to_field": "FINC_LOB_HRCHY_LVL3",
         "to_instance": "UPD_UPDATE",
         "to_type": "Update Strategy"
+      },
+      {
+        "from_field": "ACTV_DT1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "ACTV_DT",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "DIM_LAST_MDFD_DT1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "DIM_LAST_MDFD_DT",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "DIM_SRC_CD1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "DIM_SRC_CD",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_ARBR_CD1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_ARBR_CD",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_BUS_NM1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_BUS_NM",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_BUS_NM_UAT1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_BUS_NM_UAT",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_CD1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_CD",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_ID1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_HRCHY_ID",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_LVL11",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_HRCHY_LVL1",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_LVL21",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_HRCHY_LVL2",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_LVL31",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_HRCHY_LVL3",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_NM1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_NM",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "INACTV_DT1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "INACTV_DT",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "IS_ACTV_IND1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "IS_ACTV_IND",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "SSP_FINC_LOB_DIM_Key1",
+        "from_instance": "RTR_INSERT_UPDATE",
+        "from_type": "Router",
+        "to_field": "FINC_LOB_CD_SK",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "ACTV_DT",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "ACTV_DT",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "DIM_LAST_MDFD_DT3",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "DIM_LAST_MDFD_DT",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "DIM_SRC_CD",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "DIM_SRC_CD",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_ARBR_CD",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "FINC_LOB_ARBR_CD",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_BUS_NM",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "FINC_LOB_BUS_NM",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_BUS_NM_UAT",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "FINC_LOB_BUS_NM_UAT",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_CD",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "FINC_LOB_CD",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_CD_SK",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "FINC_LOB_CD_SK",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_ID",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "FINC_LOB_HRCHY_ID",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_LVL1",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "FINC_LOB_HRCHY_LVL1",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_LVL2",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "FINC_LOB_HRCHY_LVL2",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_HRCHY_LVL3",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "FINC_LOB_HRCHY_LVL3",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "FINC_LOB_NM",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "FINC_LOB_NM",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "INACTV_DT",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "INACTV_DT",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
+      },
+      {
+        "from_field": "IS_ACTV_IND",
+        "from_instance": "UPD_UPDATE",
+        "from_type": "Update Strategy",
+        "to_field": "IS_ACTV_IND",
+        "to_instance": "SSP_FINC_LOB_DIM",
+        "to_type": "Target Definition"
       }
     ],
     "parameters": []
