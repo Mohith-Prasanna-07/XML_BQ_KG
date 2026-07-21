@@ -113,6 +113,34 @@ def table_id_fn(db_type, db_name, table_name):
 def file_id_fn(repo_name, folder_name, file_name):
     return f"{repo_name}.{folder_name}.{file_name}"
 
+def source_instance_id(repo_name, folder_name, workflow_name, session_name, src_name):
+    return f"{repo_name}.{folder_name}.{workflow_name}.{session_name}.{src_name}"
+
+def target_instance_id(repo_name, folder_name, workflow_name, session_name, tgt_name):
+    return f"{repo_name}.{folder_name}.{workflow_name}.{session_name}.{tgt_name}"
+
+def transformation_instance_id(repo_name, folder_name, workflow_name, session_name, trans_name):
+    return f"{repo_name}.{folder_name}.{workflow_name}.{session_name}.{trans_name}"
+
+def instance_property_id(repo_name, folder_name, session_name, inst_name, prop_name):
+    return f"{repo_name}.{folder_name}.{session_name}.{inst_name}.{prop_name}"
+
+def session_property_id(repo_name, folder_name, session_name, prop_name):
+    return f"{repo_name}.{folder_name}.{session_name}.{prop_name}"
+
+def router_group_id(repo_name, folder_name, mapping_name, trans_name, group_name):
+    return f"{repo_name}.{folder_name}.{mapping_name}.{trans_name}.{group_name}"
+
+def lookup_condition_id(repo_name, folder_name, mapping_name, trans_name, table_name):
+    return f"{repo_name}.{folder_name}.{mapping_name}.{trans_name}.{table_name}"
+
+
+# ---------------------------------------------------------------------------
+# Session instance type classifiers (SESSTRANSFORMATION.TRANSFORMATIONTYPE)
+# ---------------------------------------------------------------------------
+_SOURCE_TRANS_TYPES = {"SOURCE QUALIFIER", "APPLICATION SOURCE QUALIFIER"}
+_TARGET_TRANS_TYPES = {"TARGET DEFINITION", "NORMALIZER", "XML TARGET DEFINITION"}
+
 
 # ---------------------------------------------------------------------------
 # Dry-run session stub — counts and prints what would be written
@@ -161,6 +189,20 @@ class _DryRunSession:
             self._counts["File"] += 1
         elif "MERGE (f:Column:Field" in query:
             self._counts["Field"] += 1
+        elif "MERGE (si:SourceInstance" in query:
+            self._counts["SourceInstance"] += 1
+        elif "MERGE (ti:TargetInstance" in query:
+            self._counts["TargetInstance"] += 1
+        elif "MERGE (tfi:TransformationInstance" in query:
+            self._counts["TransformationInstance"] += 1
+        elif "MERGE (sp:SessionProperty" in query:
+            self._counts["SessionProperty"] += 1
+        elif "MERGE (ip:InstanceProperty" in query:
+            self._counts["InstanceProperty"] += 1
+        elif "MERGE (rg:RouterGroup" in query:
+            self._counts["RouterGroup"] += 1
+        elif "MERGE (lc:LookupCondition" in query:
+            self._counts["LookupCondition"] += 1
         elif "MERGE (from)-[:FLOWS_TO]" in query:
             self._counts["rel:FLOWS_TO"] += 1
         elif "MERGE (f)-[:BOUND_TO_PORT]" in query:
@@ -195,6 +237,9 @@ class InformaticaXMLParser:
             self.driver = GraphDatabase.driver(uri, auth=(user, password))
         else:
             self.driver = None
+        # Shared state populated during mapping loading; consumed by session loading.
+        self._mapping_instances: dict = {}   # mapping_name → {inst_name: {type, name}}
+        self._mapping_sq_sources: dict = {}  # mapping_name → {sq_inst_name: [src_def_names]}
 
     def close(self):
         if self.driver:
@@ -248,6 +293,13 @@ class InformaticaXMLParser:
             "CREATE CONSTRAINT database_id IF NOT EXISTS FOR (d:Database) REQUIRE d.databaseId IS UNIQUE",
             "CREATE CONSTRAINT table_id IF NOT EXISTS FOR (tbl:Table) REQUIRE tbl.tableId IS UNIQUE",
             "CREATE CONSTRAINT file_id IF NOT EXISTS FOR (fi:File) REQUIRE fi.fileId IS UNIQUE",
+            "CREATE CONSTRAINT source_instance_id IF NOT EXISTS FOR (i:SourceInstance) REQUIRE i.sourceInstanceId IS UNIQUE",
+            "CREATE CONSTRAINT target_instance_id IF NOT EXISTS FOR (i:TargetInstance) REQUIRE i.targetInstanceId IS UNIQUE",
+            "CREATE CONSTRAINT transformation_instance_id IF NOT EXISTS FOR (i:TransformationInstance) REQUIRE i.transformationInstanceId IS UNIQUE",
+            "CREATE CONSTRAINT router_group_id IF NOT EXISTS FOR (i:RouterGroup) REQUIRE i.rtrGroupId IS UNIQUE",
+            "CREATE CONSTRAINT lookup_condition_id IF NOT EXISTS FOR (i:LookupCondition) REQUIRE i.lkpConditionId IS UNIQUE",
+            "CREATE CONSTRAINT instance_property_id IF NOT EXISTS FOR (i:InstanceProperty) REQUIRE i.instancePropertyId IS UNIQUE",
+            "CREATE CONSTRAINT session_property_id IF NOT EXISTS FOR (i:SessionProperty) REQUIRE i.sessionPropertyId IS UNIQUE",
         ]
         for stmt in stmts:
             try:
@@ -561,8 +613,10 @@ class InformaticaXMLParser:
         sources = {**folder_sources, **local_sources}
         targets = {**folder_targets, **local_targets}
 
-        # Build instance name → {type, name} map from INSTANCE elements
+        # Build instance name → {type, name} map and store for session loading
         instance_map = self._build_instance_map(mapping_elem)
+        self._mapping_instances[m_name] = instance_map
+        self._mapping_sq_sources[m_name] = self._build_sq_to_sources(mapping_elem, instance_map)
 
         # Transformations and their ports
         for trans_elem in mapping_elem.findall("TRANSFORMATION"):
@@ -588,6 +642,25 @@ class InformaticaXMLParser:
             inst_type = inst.get("TYPE", "TRANSFORMATION").upper()
             trans_name = inst.get("TRANSFORMATION_NAME", inst_name)
             result[inst_name] = {"type": inst_type, "name": trans_name}
+        return result
+
+    def _build_sq_to_sources(self, mapping_elem, instance_map: dict) -> dict:
+        """
+        Returns {sq_instance_name: [source_definition_name, ...]} by tracing
+        CONNECTOR elements that flow from a SOURCE instance into a TRANSFORMATION.
+        Used so session loading can wire SourceInstance -[:INSTANTIATES]-> SourceDefinition.
+        """
+        result: dict = {}
+        for conn in mapping_elem.findall("CONNECTOR"):
+            from_inst = conn.get("FROMINSTANCE", "")
+            to_inst   = conn.get("TOINSTANCE",   "")
+            from_info = instance_map.get(from_inst, {})
+            to_info   = instance_map.get(to_inst,   {})
+            if from_info.get("type") == "SOURCE" and to_info.get("type") == "TRANSFORMATION":
+                src_def_name = from_info["name"]
+                result.setdefault(to_inst, [])
+                if src_def_name not in result[to_inst]:
+                    result[to_inst].append(src_def_name)
         return result
 
     # ------------------------------------------------------------------
@@ -624,8 +697,91 @@ class InformaticaXMLParser:
         for attr in trans_elem.findall("TABLEATTRIBUTE"):
             self._load_property(db, attr, r_name, f_name, m_name, t_name, t_id)
 
+        trans_type = trans_elem.get("TYPE", "").upper()
+        if trans_type == "ROUTER":
+            self._load_router_groups(db, trans_elem, r_name, f_name, m_name, t_name, t_id)
+        elif "LOOKUP" in trans_type:
+            self._load_lookup_conditions(db, trans_elem, r_name, f_name, m_name, t_name, t_id)
+
         # Wire intra-transformation port flows (e.g. Router input → output groups)
         self._create_intra_transformation_flows(db, trans_elem, r_name, f_name, m_name, t_name)
+
+    # ------------------------------------------------------------------
+    # Router groups
+    # ------------------------------------------------------------------
+
+    def _load_router_groups(self, db, trans_elem, r_name, f_name,
+                             m_name, t_name, t_id) -> None:
+        """Parse Router group names and filter conditions from TABLEATTRIBUTE elements."""
+        attrs = {a.get("NAME", "").strip(): a.get("VALUE", "").strip()
+                 for a in trans_elem.findall("TABLEATTRIBUTE")}
+
+        group_numbers = set()
+        for attr_name in attrs:
+            m = re.match(r"^Group name(\d+)$", attr_name, re.IGNORECASE)
+            if m:
+                group_numbers.add(m.group(1))
+
+        for num in sorted(group_numbers):
+            g_name = attrs.get(f"Group name{num}",
+                      attrs.get(f"Group Name{num}", f"Group{num}"))
+            condition = attrs.get(f"Group filter condition{num}",
+                         attrs.get(f"Group Filter Condition{num}", ""))
+            rg_id = router_group_id(r_name, f_name, m_name, t_name, g_name)
+            db.run(
+                """
+                MERGE (rg:RouterGroup {rtrGroupId: $id})
+                SET rg.name = $name, rg.condition = $condition
+                WITH rg
+                MATCH (t:Transformation {transformationId: $tId})
+                MERGE (t)-[:HAS_GROUP]->(rg)
+                """,
+                id=rg_id, name=g_name, condition=condition, tId=t_id,
+            )
+
+        if group_numbers:
+            default_name = attrs.get("Default group name", "Default")
+            rg_id = router_group_id(r_name, f_name, m_name, t_name, default_name)
+            db.run(
+                """
+                MERGE (rg:RouterGroup {rtrGroupId: $id})
+                SET rg.name = $name, rg.condition = $condition
+                WITH rg
+                MATCH (t:Transformation {transformationId: $tId})
+                MERGE (t)-[:HAS_GROUP]->(rg)
+                """,
+                id=rg_id, name=default_name, condition="DEFAULT", tId=t_id,
+            )
+
+    # ------------------------------------------------------------------
+    # Lookup conditions
+    # ------------------------------------------------------------------
+
+    def _load_lookup_conditions(self, db, trans_elem, r_name, f_name,
+                                 m_name, t_name, t_id) -> None:
+        attrs = {a.get("NAME", "").strip(): a.get("VALUE", "").strip()
+                 for a in trans_elem.findall("TABLEATTRIBUTE")}
+
+        table_name = (attrs.get("Lookup table name")
+                      or attrs.get("Lookup Table Name", ""))
+        condition  = (attrs.get("Lookup condition")
+                      or attrs.get("Lookup Condition", ""))
+
+        if not table_name and not condition:
+            return
+
+        lkp_id = lookup_condition_id(r_name, f_name, m_name, t_name,
+                                     table_name or t_name)
+        db.run(
+            """
+            MERGE (lc:LookupCondition {lkpConditionId: $id})
+            SET lc.tableName = $tableName, lc.joinCondition = $condition
+            WITH lc
+            MATCH (t:Transformation {transformationId: $tId})
+            MERGE (t)-[:HAS_LOOKUP]->(lc)
+            """,
+            id=lkp_id, tableName=table_name, condition=condition, tId=t_id,
+        )
 
     # ------------------------------------------------------------------
     # Intra-transformation port flows
@@ -961,39 +1117,188 @@ class InformaticaXMLParser:
         for task_elem in parent_elem.findall("TASK"):
             if task_elem.get("TYPE", "").upper() != "SESSION":
                 continue
+            self._load_session(db, task_elem, r_name, f_name, wf_name, wf_id)
 
-            task_name = task_elem.get("NAME", "")
-            s_id = session_id(r_name, f_name, wf_name, task_name)
+    def _load_session(self, db, task_elem, r_name, f_name, wf_name, wf_id) -> None:
+        task_name = task_elem.get("NAME", "")
+        s_id = session_id(r_name, f_name, wf_name, task_name)
 
+        db.run(
+            """
+            MERGE (s:Session {sessionId: $id})
+            SET s.name = $name
+            WITH s
+            MATCH (w:Workflow {workflowId: $wfId})
+            MERGE (w)-[:HAS_SESSION]->(s)
+            """,
+            id=s_id, name=task_name, wfId=wf_id,
+        )
+
+        # Session → Mapping wire + collect mapping name for instance lookup
+        mapping_name = ""
+        for attr in task_elem.findall("ATTRIBUTE"):
+            if attr.get("NAME") == "Mapping name":
+                mapping_name = attr.get("VALUE", "")
+                break
+
+        if mapping_name:
+            m_id = mapping_id(r_name, f_name, mapping_name)
             db.run(
                 """
-                MERGE (s:Session {sessionId: $id})
-                SET s.name = $name
-                WITH s
-                MATCH (w:Workflow {workflowId: $wfId})
-                MERGE (w)-[:HAS_SESSION]->(s)
+                MATCH (s:Session {sessionId: $sId})
+                MATCH (m:Mapping  {mappingId: $mId})
+                MERGE (s)-[:RUNS_MAPPING]->(m)
                 """,
-                id=s_id,
-                name=task_name,
-                wfId=wf_id,
+                sId=s_id, mId=m_id,
             )
 
-            # Wire session → mapping via "Mapping name" attribute
-            mapping_name = ""
-            for attr in task_elem.findall("ATTRIBUTE"):
-                if attr.get("NAME") == "Mapping name":
-                    mapping_name = attr.get("VALUE", "")
-                    break
+        # Session-level properties (ATTRIBUTE children, skip structural ones)
+        _STRUCTURAL = {"Mapping name"}
+        for attr in task_elem.findall("ATTRIBUTE"):
+            attr_name = attr.get("NAME", "")
+            attr_val  = attr.get("VALUE", "")
+            if attr_name in _STRUCTURAL or not attr_val.strip():
+                continue
+            sp_id = session_property_id(r_name, f_name, task_name, attr_name)
+            db.run(
+                """
+                MERGE (sp:SessionProperty {sessionPropertyId: $id})
+                SET sp.name = $name, sp.value = $value
+                WITH sp
+                MATCH (s:Session {sessionId: $sId})
+                MERGE (s)-[:HAS_PROPERTY]->(sp)
+                """,
+                id=sp_id, name=attr_name, value=attr_val, sId=s_id,
+            )
 
-            if mapping_name:
-                m_id = mapping_id(r_name, f_name, mapping_name)
+        # Per-transformation/source/target session instances
+        inst_map  = self._mapping_instances.get(mapping_name, {})
+        sq_sources = self._mapping_sq_sources.get(mapping_name, {})
+        for sesstrans in task_elem.findall("SESSTRANSFORMATION"):
+            self._load_session_instance(
+                db, sesstrans, r_name, f_name, wf_name,
+                task_name, s_id, mapping_name, inst_map, sq_sources,
+            )
+
+    def _load_session_instance(self, db, sesstrans_elem, r_name, f_name,
+                                wf_name, s_name, s_id, m_name,
+                                inst_map, sq_sources) -> None:
+        inst_name  = sesstrans_elem.get("INSTANCE_NAME",
+                         sesstrans_elem.get("SINSTANCENAME", ""))
+        trans_name = sesstrans_elem.get("TRANSFORMATIONNAME", inst_name)
+        trans_type = sesstrans_elem.get("TRANSFORMATIONTYPE", "").upper().strip()
+
+        instance_attrs = [
+            (a.get("NAME", ""), a.get("VALUE", ""))
+            for a in sesstrans_elem.findall("ATTRIBUTE")
+            if a.get("VALUE", "").strip()
+        ]
+
+        if trans_type in _SOURCE_TRANS_TYPES:
+            si_id = source_instance_id(r_name, f_name, wf_name, s_name, inst_name)
+            db.run(
+                """
+                MERGE (si:SourceInstance {sourceInstanceId: $id})
+                SET si.name = $name
+                WITH si
+                MATCH (s:Session {sessionId: $sId})
+                MERGE (s)-[:USES_INSTANCE]->(si)
+                """,
+                id=si_id, name=inst_name, sId=s_id,
+            )
+            for src_def_name in sq_sources.get(inst_name, []):
+                sd_id = source_def_id(r_name, f_name, src_def_name)
                 db.run(
                     """
-                    MATCH (s:Session {sessionId: $sId})
-                    MATCH (m:Mapping  {mappingId: $mId})
-                    MERGE (s)-[:RUNS_MAPPING]->(m)
+                    MATCH (si:SourceInstance {sourceInstanceId: $siId})
+                    MATCH (sd:SourceDefinition {sourceId: $sdId})
+                    MERGE (si)-[:INSTANTIATES]->(sd)
                     """,
-                    sId=s_id, mId=m_id,
+                    siId=si_id, sdId=sd_id,
+                )
+            for prop_name, prop_val in instance_attrs:
+                ip_id = instance_property_id(r_name, f_name, s_name, inst_name, prop_name)
+                db.run(
+                    """
+                    MERGE (ip:InstanceProperty {instancePropertyId: $id})
+                    SET ip.name = $name, ip.value = $value
+                    WITH ip
+                    MATCH (si:SourceInstance {sourceInstanceId: $siId})
+                    MERGE (si)-[:HAS_PROPERTY]->(ip)
+                    """,
+                    id=ip_id, name=prop_name, value=prop_val, siId=si_id,
+                )
+
+        elif trans_type in _TARGET_TRANS_TYPES:
+            ti_id = target_instance_id(r_name, f_name, wf_name, s_name, inst_name)
+            db.run(
+                """
+                MERGE (ti:TargetInstance {targetInstanceId: $id})
+                SET ti.name = $name
+                WITH ti
+                MATCH (s:Session {sessionId: $sId})
+                MERGE (s)-[:USES_INSTANCE]->(ti)
+                """,
+                id=ti_id, name=inst_name, sId=s_id,
+            )
+            td_id = target_def_id(r_name, f_name, trans_name)
+            db.run(
+                """
+                MATCH (ti:TargetInstance {targetInstanceId: $tiId})
+                OPTIONAL MATCH (td:TargetDefinition {targetId: $tdId})
+                FOREACH (_ IN CASE WHEN td IS NOT NULL THEN [1] ELSE [] END |
+                    MERGE (ti)-[:INSTANTIATES]->(td)
+                )
+                """,
+                tiId=ti_id, tdId=td_id,
+            )
+            for prop_name, prop_val in instance_attrs:
+                ip_id = instance_property_id(r_name, f_name, s_name, inst_name, prop_name)
+                db.run(
+                    """
+                    MERGE (ip:InstanceProperty {instancePropertyId: $id})
+                    SET ip.name = $name, ip.value = $value
+                    WITH ip
+                    MATCH (ti:TargetInstance {targetInstanceId: $tiId})
+                    MERGE (ti)-[:HAS_PROPERTY]->(ip)
+                    """,
+                    id=ip_id, name=prop_name, value=prop_val, tiId=ti_id,
+                )
+
+        else:
+            tfi_id = transformation_instance_id(r_name, f_name, wf_name, s_name, inst_name)
+            db.run(
+                """
+                MERGE (tfi:TransformationInstance {transformationInstanceId: $id})
+                SET tfi.name = $name
+                WITH tfi
+                MATCH (s:Session {sessionId: $sId})
+                MERGE (s)-[:USES_INSTANCE]->(tfi)
+                """,
+                id=tfi_id, name=inst_name, sId=s_id,
+            )
+            t_id = transformation_id(r_name, f_name, m_name, trans_name)
+            db.run(
+                """
+                MATCH (tfi:TransformationInstance {transformationInstanceId: $tfiId})
+                OPTIONAL MATCH (t:Transformation {transformationId: $tId})
+                FOREACH (_ IN CASE WHEN t IS NOT NULL THEN [1] ELSE [] END |
+                    MERGE (tfi)-[:INSTANTIATES]->(t)
+                )
+                """,
+                tfiId=tfi_id, tId=t_id,
+            )
+            for prop_name, prop_val in instance_attrs:
+                ip_id = instance_property_id(r_name, f_name, s_name, inst_name, prop_name)
+                db.run(
+                    """
+                    MERGE (ip:InstanceProperty {instancePropertyId: $id})
+                    SET ip.name = $name, ip.value = $value
+                    WITH ip
+                    MATCH (tfi:TransformationInstance {transformationInstanceId: $tfiId})
+                    MERGE (tfi)-[:HAS_PROPERTY]->(ip)
+                    """,
+                    id=ip_id, name=prop_name, value=prop_val, tfiId=tfi_id,
                 )
 
 

@@ -24,7 +24,14 @@
 (:Database)
 (:SourceDefinition) 
 (:TargetDefinition)
-
+(:SourceInstance)
+(:TargetInstance)
+(:TransformationInstance)
+(:Session)
+(:RouterGroup)
+(:InstanceProperty)
+(:LookupCondition)
+(:SessionProperty)
 ```
 
 ## Node Properties
@@ -197,6 +204,58 @@ targetFunction
 ruleType
 ```
 
+### Session
+
+```text
+sessionId
+name
+```
+
+### TargetInstance
+```text
+targetInstanceId
+name
+```
+
+### SourceInstance
+```text
+sourceInstanceId
+name
+```
+
+### TransformationInstance
+```text
+transformationInstanceId
+name
+```
+
+### InstanceProperty
+```text
+instancePropertyId
+name
+value
+```
+
+### SessionProperty
+```text
+sessionPropertyId
+name
+value
+```
+
+### RouterGroup
+```text
+rtrGroupId
+name
+condition
+```
+
+### LookupCondition
+```text
+lkpConditionId
+tableName
+joinCondition
+```
 
 
 ## Relationships
@@ -229,6 +288,22 @@ ruleType
 (:Database)-[:HAS_TABLE]->(:Table)
 (:File)-[:HAS_DEFINITION]->(:SourceDefinition)
 (:File)-[:HAS_DEFINITION]->(:TargetDefinition)
+(:SourceInstance)-[:INSTANTIATES]->(:SourceDefinition)
+(:TargetInstance)-[:INSTANTIATES]->(:TargetDefinition)
+(:TransformationInstance)-[:INSTANTIATES]->(:Transformation)
+(:SourceInstance)-[:HAS_PROPERTY]->(:InstanceProperty)
+(:TargetInstance)-[:HAS_PROPERTY]->(:InstanceProperty)
+(:TransformationInstance)-[:HAS_PROPERTY]->(:InstanceProperty)
+(:Session)-[:HAS_PROPERTY]->(:SessionProperty)
+(:Workflow)-[:HAS_SESSION]->(:Session)
+(:Session)-[:DEPENDS_ON]->(:Session)
+(:Session)-[:PREREQUISITE_FOR]->(:Session)
+(:Session)-[:RUNS_MAPPING]->(:Mapping)
+(:Session)-[USES_INSTANCE]->(:SourceInstance)
+(:Session)-[USES_INSTANCE]->(:TargetInstance)
+(:Session)-[USES_INSTANCE]->(:TransformationInstance)
+(:Transformation)-[:HAS_GROUP]->(:RouterGroup)
+(:Transformation)-[:HAS_LOOKUP]->(:LookupCondition)
 ```
 
 ## Constraints
@@ -305,6 +380,38 @@ REQUIRE p.sourceId IS UNIQUE;
 CREATE CONSTRAINT conversion_issue_id IF NOT EXISTS
 FOR (i:ConversionIssue)
 REQUIRE i.issueId IS UNIQUE;
+
+CREATE CONSTRAINT source_instance_id IF NOT EXISTS
+FOR (i:SourceInstance)
+REQUIRE i.sourceInstanceId IS UNIQUE;
+
+CREATE CONSTRAINT target_instance_id IF NOT EXISTS
+FOR (i:TargetInstance)
+REQUIRE i.targetInstanceId IS UNIQUE;
+
+CREATE CONSTRAINT transformation_instance_id IF NOT EXISTS
+FOR (i:TransformationInstance)
+REQUIRE i.transformationInstanceId IS UNIQUE;
+
+CREATE CONSTRAINT session_id IF NOT EXISTS
+FOR (i:Session)
+REQUIRE i.sessionId IS UNIQUE;
+
+CREATE CONSTRAINT router_group_id IF NOT EXISTS
+FOR (i:RouterGroup)
+REQUIRE i.rtrGroupId IS UNIQUE;
+
+CREATE CONSTRAINT lookup_condition_id IF NOT EXISTS
+FOR (i:LookupCondition)
+REQUIRE i.lkpConditionId IS UNIQUE;
+
+CREATE CONSTRAINT instance_property_id IF NOT EXISTS
+FOR (i:InstanceProperty)
+REQUIRE i.instancePropertyId IS UNIQUE;
+
+CREATE CONSTRAINT session_property_id IF NOT EXISTS
+FOR (i:SessionProperty)
+REQUIRE i.sessionPropertyId IS UNIQUE;
 ```
 
 ## Unique ID Strategy
@@ -326,6 +433,14 @@ sourceId = repositoryName + "." + folderName + "." + sourceName
 fileId = repositoryName + "." + folderName + "." + fileName
 tableId = databaseType + "." + databaseName + "." + tableName
 databaseId = databaseType + "." + databaseName
+instancePropertyId = repositoryName + "." + folderName + "." + sessionName + "." + transformationName + "." + propertyName
+sessionPropertyId = repositoryName + "." + folderName + "." + sessionName + "." + propertyName
+lkpConditionId = repositoryName + "." + folderName + "." + workflowName  + "." + sessionName + "." + transformationName + "." + tableName
+rtrGroupId = repositoryName + "." + folderName + "." + workflowName  + "." + sessionName + "." + transformationName + "." + groupName
+transformationInstanceId = repositoryName + "." + folderName + "." + workflowName  + "." + sessionName + "." + transformationName
+sourceInstanceId = repositoryName + "." + folderName + "." + workflowName  + "." + sessionName + "." + sourceName
+targetInstanceId = repositoryName + "." + folderName + "." + workflowName  + "." + sessionName + "." + targetName
+sessionId = repositoryName + "." + folderName + "." + workflowName + "." + sessionName
 ```
 
 ## Core Graph Paths
@@ -376,6 +491,27 @@ databaseId = databaseType + "." + databaseName
 
 ```text
 (:Column:Port:OutputPort)-[:DERIVES_FROM]->(:Column:Port:VariablePort)-[:DERIVES_FROM]->(:Column:Port:InputPort)
+```
+
+
+### Session Structure Path
+```text
+(:Repository)-[:HAS_FOLDER]->(:Folder)-[:HAS_WORKFLOW]->(:Workflow)-[:HAS_SESSION]->(:Session)-[:HAS_PROPERTY]->(:SessionProperty)
+```
+
+### Transformation Instance Structure Path
+```text
+(:Session)-[USES_INSTANCE]->(:TransformationInstance)-[:INSTANTIATES]->(:Transformation)
+```
+
+### Source Instance Structure Path
+```text
+(:Session)-[USES_INSTANCE]->(:SourceInstance)-[:INSTANTIATES]->(:SourceDefinition)
+```
+
+### Target Instance Structure Path
+```text
+(:Session)-[USES_INSTANCE]->(:TargetInstance)-[:INSTANTIATES]->(:TargetDefinition)
 ```
 
 ## Minimal MVP Graph
