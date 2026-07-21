@@ -195,15 +195,17 @@ class KGExtractor:
             ports_by_trans    = self._get_ports(db, mid)
             props_by_trans    = self._get_properties(db, mid)
             groups_by_trans   = self._get_router_groups(db, mid)
+            lkp_by_trans      = self._get_lookup_conditions(db, mid)
             inter_edges       = self._get_inter_flows(db, mid)
             intra_flows       = self._get_intra_flows(db, mid)
+            target_flows      = self._get_target_flows(db, mid)
             sources           = self._get_sources(db, mid)
             targets           = self._get_targets(db, mid)
             parameters        = self._get_parameters(db, mid)
 
         ordered = self._topo_sort(transformations, inter_edges)
         pipeline = self._build_pipeline(ordered, ports_by_trans, props_by_trans,
-                                        groups_by_trans, intra_flows)
+                                        groups_by_trans, lkp_by_trans, intra_flows)
 
         field_lineage = [
             {
@@ -214,7 +216,7 @@ class KGExtractor:
                 "to_instance":   e["to_instance"],
                 "to_type":       e["to_type"],
             }
-            for e in inter_edges
+            for e in (inter_edges + target_flows)
         ]
 
         return {
@@ -291,12 +293,12 @@ class KGExtractor:
             """
             MATCH (m:Mapping {mappingId: $mid})-[:HAS_TRANSFORMATION]->(t:Transformation)
                   -[:HAS_GROUP]->(rg:RouterGroup)
-            RETURN t.transformationId  AS trans_id,
-                   rg.name             AS name,
+            RETURN t.transformationId          AS trans_id,
+                   rg.name                    AS name,
                    coalesce(rg.groupType, '') AS group_type,
                    coalesce(rg.condition, '') AS condition,
-                   coalesce(rg.order, '0')    AS order
-            ORDER BY t.transformationId, rg.order
+                   toInteger(coalesce(rg.order, '0')) AS order
+            ORDER BY t.transformationId, toInteger(coalesce(rg.order, '0'))
             """,
             mid=mid,
         )
@@ -309,6 +311,47 @@ class KGExtractor:
                 "order":      row["order"],
             })
         return by_trans
+
+    def _get_lookup_conditions(self, db, mid):
+        """LookupCondition nodes store the canonical table name and join predicate."""
+        result = db.run(
+            """
+            MATCH (m:Mapping {mappingId: $mid})-[:HAS_TRANSFORMATION]->(t:Transformation)
+                  -[:HAS_LOOKUP]->(lc:LookupCondition)
+            RETURN t.transformationId              AS trans_id,
+                   coalesce(lc.tableName, '')      AS table_name,
+                   coalesce(lc.joinCondition, '')  AS join_condition
+            """,
+            mid=mid,
+        )
+        by_trans = {}
+        for row in result:
+            by_trans[row["trans_id"]] = {
+                "table_name":     row["table_name"],
+                "join_condition": row["join_condition"],
+            }
+        return by_trans
+
+    def _get_target_flows(self, db, mid):
+        """BOUND_TO_FIELD edges — ports that write directly to target fields.
+        Captures mappings where a transformation connects to a target without
+        an intervening Update Strategy."""
+        result = db.run(
+            """
+            MATCH (m:Mapping {mappingId: $mid})-[:HAS_TRANSFORMATION]->(t:Transformation)
+                  -[:HAS_PORT]->(p:Column:Port)-[:BOUND_TO_FIELD]->(f:Column:Field)
+                  <-[:HAS_FIELD]-(td:TargetDefinition)
+            RETURN t.name               AS from_instance,
+                   t.type               AS from_type,
+                   p.name               AS from_field,
+                   td.name              AS to_instance,
+                   'Target Definition'  AS to_type,
+                   f.name               AS to_field
+            ORDER BY from_instance, from_field
+            """,
+            mid=mid,
+        )
+        return [dict(r) for r in result]
 
     def _get_properties(self, db, mid):
         result = db.run(
@@ -495,14 +538,15 @@ class KGExtractor:
     # ------------------------------------------------------------------
 
     def _build_pipeline(self, ordered_trans, ports_by_trans, props_by_trans,
-                        groups_by_trans, intra_flows):
+                        groups_by_trans, lkp_by_trans, intra_flows):
         pipeline = []
         for trans in ordered_trans:
-            tid   = trans["id"]
-            ports = sorted(ports_by_trans.get(tid, []), key=lambda p: p.get("ord_pos") or 0)
-            props = props_by_trans.get(tid, {})
+            tid    = trans["id"]
+            ports  = sorted(ports_by_trans.get(tid, []), key=lambda p: p.get("ord_pos") or 0)
+            props  = props_by_trans.get(tid, {})
             groups = groups_by_trans.get(tid, [])
-            intra = intra_flows.get(tid, [])
+            lkp    = lkp_by_trans.get(tid, {})
+            intra  = intra_flows.get(tid, [])
 
             # Fallback ref_field from intra-flows when port.refField is not set
             intra_ref = {f["to_port_id"]: f["from_port_name"] for f in intra}
@@ -521,7 +565,7 @@ class KGExtractor:
                 for p in ports
             ]
 
-            # Map raw property names to JSON keys
+            # Map raw TABLEATTRIBUTE property names to JSON keys
             mapped = {}
             for prop_name, prop_value in props.items():
                 key = _PROP_KEY.get(prop_name)
@@ -532,6 +576,10 @@ class KGExtractor:
                 else:
                     mapped[key] = prop_value.strip() if prop_value else None
 
+            # LookupCondition node takes precedence over TABLEATTRIBUTE-derived values
+            lookup_table     = lkp.get("table_name") or mapped.get("lookup_table")
+            lookup_condition = lkp.get("join_condition") or mapped.get("lookup_condition")
+
             pipeline.append({
                 "name":                trans["name"],
                 "type":                trans["type"],
@@ -539,8 +587,8 @@ class KGExtractor:
                 "groups":              groups,
                 "sql_override":        mapped.get("sql_override"),
                 "source_filter":       mapped.get("source_filter"),
-                "lookup_table":        mapped.get("lookup_table"),
-                "lookup_condition":    mapped.get("lookup_condition"),
+                "lookup_table":        lookup_table,
+                "lookup_condition":    lookup_condition,
                 "filter_condition":    mapped.get("filter_condition"),
                 "update_strategy_expr": mapped.get("update_strategy_expr"),
                 "select_distinct":     mapped.get("select_distinct", False),
