@@ -194,6 +194,7 @@ class KGExtractor:
             transformations   = self._get_transformations(db, mid)
             ports_by_trans    = self._get_ports(db, mid)
             props_by_trans    = self._get_properties(db, mid)
+            groups_by_trans   = self._get_router_groups(db, mid)
             inter_edges       = self._get_inter_flows(db, mid)
             intra_flows       = self._get_intra_flows(db, mid)
             sources           = self._get_sources(db, mid)
@@ -201,7 +202,8 @@ class KGExtractor:
             parameters        = self._get_parameters(db, mid)
 
         ordered = self._topo_sort(transformations, inter_edges)
-        pipeline = self._build_pipeline(ordered, ports_by_trans, props_by_trans, intra_flows)
+        pipeline = self._build_pipeline(ordered, ports_by_trans, props_by_trans,
+                                        groups_by_trans, intra_flows)
 
         field_lineage = [
             {
@@ -263,16 +265,18 @@ class KGExtractor:
             MATCH (m:Mapping {mappingId: $mid})-[:HAS_TRANSFORMATION]->(t:Transformation)
                   -[:HAS_PORT]->(p:Column:Port)
             OPTIONAL MATCH (p)-[:USES_EXPRESSION]->(e:Expression)
-            RETURN t.transformationId     AS trans_id,
-                   p.portId              AS port_id,
-                   p.name                AS name,
-                   p.portType            AS port_type,
-                   p.datatype            AS datatype,
-                   p.precision           AS precision,
-                   p.scale               AS scale,
-                   p.defaultValue        AS default_value,
+            RETURN t.transformationId          AS trans_id,
+                   p.portId                   AS port_id,
+                   p.name                     AS name,
+                   p.portType                 AS port_type,
+                   p.datatype                 AS datatype,
+                   p.precision                AS precision,
+                   p.scale                    AS scale,
+                   p.defaultValue             AS default_value,
                    coalesce(p.ordinalPosition, 0) AS ord_pos,
-                   e.rawExpression       AS expression
+                   coalesce(p.group, '')       AS group,
+                   coalesce(p.refField, '')    AS ref_field,
+                   e.rawExpression            AS expression
             ORDER BY t.transformationId, p.ordinalPosition
             """,
             mid=mid,
@@ -280,6 +284,30 @@ class KGExtractor:
         by_trans = defaultdict(list)
         for row in result:
             by_trans[row["trans_id"]].append(dict(row))
+        return by_trans
+
+    def _get_router_groups(self, db, mid):
+        result = db.run(
+            """
+            MATCH (m:Mapping {mappingId: $mid})-[:HAS_TRANSFORMATION]->(t:Transformation)
+                  -[:HAS_GROUP]->(rg:RouterGroup)
+            RETURN t.transformationId  AS trans_id,
+                   rg.name             AS name,
+                   coalesce(rg.groupType, '') AS group_type,
+                   coalesce(rg.condition, '') AS condition,
+                   coalesce(rg.order, '0')    AS order
+            ORDER BY t.transformationId, rg.order
+            """,
+            mid=mid,
+        )
+        by_trans = defaultdict(list)
+        for row in result:
+            by_trans[row["trans_id"]].append({
+                "name":       row["name"],
+                "group_type": row["group_type"],
+                "condition":  row["condition"],
+                "order":      row["order"],
+            })
         return by_trans
 
     def _get_properties(self, db, mid):
@@ -466,15 +494,17 @@ class KGExtractor:
     # Pipeline assembly
     # ------------------------------------------------------------------
 
-    def _build_pipeline(self, ordered_trans, ports_by_trans, props_by_trans, intra_flows):
+    def _build_pipeline(self, ordered_trans, ports_by_trans, props_by_trans,
+                        groups_by_trans, intra_flows):
         pipeline = []
         for trans in ordered_trans:
             tid   = trans["id"]
             ports = sorted(ports_by_trans.get(tid, []), key=lambda p: p.get("ord_pos") or 0)
             props = props_by_trans.get(tid, {})
+            groups = groups_by_trans.get(tid, [])
             intra = intra_flows.get(tid, [])
 
-            # ref_field: maps output port id → input port name (mainly for Router)
+            # Fallback ref_field from intra-flows when port.refField is not set
             intra_ref = {f["to_port_id"]: f["from_port_name"] for f in intra}
 
             fields = [
@@ -484,8 +514,9 @@ class KGExtractor:
                     "expression":      p["expression"] or "",
                     "expression_type": self._infer_expr_type(p, trans["type"]),
                     "port_type":       p["port_type"] or "",
-                    "group":           "",
-                    "ref_field":       intra_ref.get(p["port_id"], ""),
+                    "group":           p.get("group") or "",
+                    "ref_field":       (p.get("ref_field") or ""
+                                        or intra_ref.get(p["port_id"], "")),
                 }
                 for p in ports
             ]
@@ -505,7 +536,7 @@ class KGExtractor:
                 "name":                trans["name"],
                 "type":                trans["type"],
                 "fields":              fields,
-                "groups":              [],
+                "groups":              groups,
                 "sql_override":        mapped.get("sql_override"),
                 "source_filter":       mapped.get("source_filter"),
                 "lookup_table":        mapped.get("lookup_table"),

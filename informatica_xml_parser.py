@@ -370,8 +370,80 @@ class InformaticaXMLParser:
             self._load_mapping(db, mapping_elem, r_name, f_name, f_id,
                                folder_sources, folder_targets)
 
+        # Folder-level SESSION elements (reusable sessions defined outside WORKFLOW)
+        for session_elem in folder_elem.findall("SESSION"):
+            self._load_folder_session(db, session_elem, r_name, f_name, f_id)
+
         for workflow_elem in folder_elem.findall("WORKFLOW"):
             self._load_workflow(db, workflow_elem, r_name, f_name, f_id)
+
+    # ------------------------------------------------------------------
+    # Folder-level SESSION (reusable sessions defined outside WORKFLOW)
+    # ------------------------------------------------------------------
+
+    def _load_folder_session(self, db, session_elem, r_name, f_name, f_id) -> None:
+        s_name = session_elem.get("NAME", "")
+        m_name = session_elem.get("MAPPINGNAME", "")
+        # Folder-scoped sessions use a 3-part ID (no workflow component)
+        s_id = f"{r_name}.{f_name}.{s_name}"
+
+        db.run(
+            """
+            MERGE (s:Session {sessionId: $id})
+            SET s.name        = $name,
+                s.mappingName = $mappingName,
+                s.reusable    = $reusable
+            WITH s
+            MATCH (f:Folder {folderId: $fId})
+            MERGE (f)-[:HAS_SESSION]->(s)
+            """,
+            id=s_id,
+            name=s_name,
+            mappingName=m_name,
+            reusable=session_elem.get("REUSABLE", "NO"),
+            fId=f_id,
+        )
+        logger.info("      Session: %s", s_name)
+
+        if m_name:
+            m_id = mapping_id(r_name, f_name, m_name)
+            db.run(
+                """
+                MATCH (s:Session {sessionId: $sId})
+                OPTIONAL MATCH (m:Mapping {mappingId: $mId})
+                FOREACH (_ IN CASE WHEN m IS NOT NULL THEN [1] ELSE [] END |
+                    MERGE (s)-[:RUNS_MAPPING]->(m)
+                )
+                """,
+                sId=s_id, mId=m_id,
+            )
+
+        # Session-level properties (ATTRIBUTE children)
+        for attr in session_elem.findall("ATTRIBUTE"):
+            attr_name = attr.get("NAME", "")
+            attr_val  = attr.get("VALUE", "")
+            if not attr_val.strip():
+                continue
+            sp_id = session_property_id(r_name, f_name, s_name, attr_name)
+            db.run(
+                """
+                MERGE (sp:SessionProperty {sessionPropertyId: $id})
+                SET sp.name = $name, sp.value = $value
+                WITH sp
+                MATCH (s:Session {sessionId: $sId})
+                MERGE (s)-[:HAS_PROPERTY]->(sp)
+                """,
+                id=sp_id, name=attr_name, value=attr_val, sId=s_id,
+            )
+
+        # Per-transformation session instances (SESSTRANSFORMATIONINST)
+        inst_map   = self._mapping_instances.get(m_name, {})
+        sq_sources = self._mapping_sq_sources.get(m_name, {})
+        for sesstrans in session_elem.findall("SESSTRANSFORMATIONINST"):
+            self._load_session_instance(
+                db, sesstrans, r_name, f_name, "FOLDER",
+                s_name, s_id, m_name, inst_map, sq_sources,
+            )
 
     # ------------------------------------------------------------------
     # Source / Target field registries
@@ -712,45 +784,29 @@ class InformaticaXMLParser:
 
     def _load_router_groups(self, db, trans_elem, r_name, f_name,
                              m_name, t_name, t_id) -> None:
-        """Parse Router group names and filter conditions from TABLEATTRIBUTE elements."""
-        attrs = {a.get("NAME", "").strip(): a.get("VALUE", "").strip()
-                 for a in trans_elem.findall("TABLEATTRIBUTE")}
-
-        group_numbers = set()
-        for attr_name in attrs:
-            m = re.match(r"^Group name(\d+)$", attr_name, re.IGNORECASE)
-            if m:
-                group_numbers.add(m.group(1))
-
-        for num in sorted(group_numbers):
-            g_name = attrs.get(f"Group name{num}",
-                      attrs.get(f"Group Name{num}", f"Group{num}"))
-            condition = attrs.get(f"Group filter condition{num}",
-                         attrs.get(f"Group Filter Condition{num}", ""))
+        """Parse Router group definitions from <GROUP> child elements."""
+        for grp in trans_elem.findall("GROUP"):
+            g_name = grp.get("NAME", "")
+            if not g_name:
+                continue
             rg_id = router_group_id(r_name, f_name, m_name, t_name, g_name)
             db.run(
                 """
                 MERGE (rg:RouterGroup {rtrGroupId: $id})
-                SET rg.name = $name, rg.condition = $condition
+                SET rg.name      = $name,
+                    rg.groupType = $groupType,
+                    rg.condition = $condition,
+                    rg.order     = $order
                 WITH rg
                 MATCH (t:Transformation {transformationId: $tId})
                 MERGE (t)-[:HAS_GROUP]->(rg)
                 """,
-                id=rg_id, name=g_name, condition=condition, tId=t_id,
-            )
-
-        if group_numbers:
-            default_name = attrs.get("Default group name", "Default")
-            rg_id = router_group_id(r_name, f_name, m_name, t_name, default_name)
-            db.run(
-                """
-                MERGE (rg:RouterGroup {rtrGroupId: $id})
-                SET rg.name = $name, rg.condition = $condition
-                WITH rg
-                MATCH (t:Transformation {transformationId: $tId})
-                MERGE (t)-[:HAS_GROUP]->(rg)
-                """,
-                id=rg_id, name=default_name, condition="DEFAULT", tId=t_id,
+                id=rg_id,
+                name=g_name,
+                groupType=grp.get("TYPE", ""),
+                condition=grp.get("EXPRESSION", ""),
+                order=grp.get("ORDER", "0"),
+                tId=t_id,
             )
 
     # ------------------------------------------------------------------
@@ -799,31 +855,33 @@ class InformaticaXMLParser:
     def _create_router_port_flows(self, db, trans_elem, r_name, f_name,
                                    m_name, t_name) -> None:
         """
-        In a Router, each output group repeats the input port set in the same
-        positional order.  The flat TRANSFORMFIELD list is arranged as:
-            [in_0, in_1, ..., in_{n-1},          # n input ports
-             g1_out_0, g1_out_1, ..., g1_out_{n-1},  # group 1
-             g2_out_0, ...,                           # group 2  …]
-        So output[i] maps to input[i % n].
+        Wire Router input ports to their output copies using the REF_FIELD
+        attribute on each OUTPUT TRANSFORMFIELD.  Falls back to positional
+        mapping (output[i] → input[i % n]) when REF_FIELD is absent.
         """
-        input_port_ids = []
-        output_port_ids = []
+        input_ports: dict = {}    # port_name → port_id
+        output_ports: list = []   # [(port_id, ref_field_name)]
 
         for tf in trans_elem.findall("TRANSFORMFIELD"):
             porttype = tf.get("PORTTYPE", tf.get("TYPE", "")).upper().strip()
             p_name = tf.get("NAME", "")
             p_id = port_id(r_name, f_name, m_name, t_name, p_name)
             if porttype == "INPUT":
-                input_port_ids.append(p_id)
+                input_ports[p_name] = p_id
             elif porttype == "OUTPUT":
-                output_port_ids.append(p_id)
+                output_ports.append((p_id, tf.get("REF_FIELD", "")))
 
-        n = len(input_port_ids)
-        if n == 0 or not output_port_ids:
+        if not input_ports or not output_ports:
             return
 
-        for idx, out_p_id in enumerate(output_port_ids):
-            in_p_id = input_port_ids[idx % n]
+        input_ids_list = list(input_ports.values())
+        n = len(input_ids_list)
+
+        for idx, (out_p_id, ref_field) in enumerate(output_ports):
+            if ref_field and ref_field in input_ports:
+                in_p_id = input_ports[ref_field]
+            else:
+                in_p_id = input_ids_list[idx % n]
             db.run(
                 """
                 MATCH (from:Column:Port {portId: $fromId})
@@ -912,7 +970,9 @@ class InformaticaXMLParser:
                 p.scale           = $scale,
                 p.defaultValue    = $defaultValue,
                 p.ordinalPosition = $pos,
-                p.isVariable      = $isVar
+                p.isVariable      = $isVar,
+                p.group           = $group,
+                p.refField        = $refField
             WITH p
             MATCH (t:Transformation {{transformationId: $tId}})
             MERGE (t)-[:HAS_PORT]->(p)
@@ -927,6 +987,8 @@ class InformaticaXMLParser:
             pos=position,
             isVar=specific_label == "VariablePort",
             tId=t_id,
+            group=tf_elem.get("GROUP", ""),
+            refField=tf_elem.get("REF_FIELD", ""),
         )
 
         # Create Expression node when a non-trivial expression is present
@@ -1090,8 +1152,24 @@ class InformaticaXMLParser:
         )
         logger.info("    Workflow: %s", wf_name)
 
-        # Tasks directly under the workflow
+        # Non-reusable session TASK elements directly under the workflow
         self._load_tasks(db, wf_elem, r_name, f_name, wf_name, wf_id)
+
+        # Reusable sessions referenced via TASKINSTANCE (the common export format)
+        for ti_elem in wf_elem.findall("TASKINSTANCE"):
+            if ti_elem.get("TASKTYPE", "").upper() == "SESSION":
+                task_name = ti_elem.get("TASKNAME", ti_elem.get("NAME", ""))
+                referenced_s_id = f"{r_name}.{f_name}.{task_name}"
+                db.run(
+                    """
+                    MATCH (w:Workflow {workflowId: $wfId})
+                    OPTIONAL MATCH (s:Session {sessionId: $sId})
+                    FOREACH (_ IN CASE WHEN s IS NOT NULL THEN [1] ELSE [] END |
+                        MERGE (w)-[:HAS_SESSION]->(s)
+                    )
+                    """,
+                    wfId=wf_id, sId=referenced_s_id,
+                )
 
         # Worklets nested inside the workflow
         for wl_elem in wf_elem.findall("WORKLET"):
@@ -1172,9 +1250,12 @@ class InformaticaXMLParser:
             )
 
         # Per-transformation/source/target session instances
+        # Accept both element names (export format varies by version)
         inst_map  = self._mapping_instances.get(mapping_name, {})
         sq_sources = self._mapping_sq_sources.get(mapping_name, {})
-        for sesstrans in task_elem.findall("SESSTRANSFORMATION"):
+        sesstrans_list = (task_elem.findall("SESSTRANSFORMATION")
+                          + task_elem.findall("SESSTRANSFORMATIONINST"))
+        for sesstrans in sesstrans_list:
             self._load_session_instance(
                 db, sesstrans, r_name, f_name, wf_name,
                 task_name, s_id, mapping_name, inst_map, sq_sources,
