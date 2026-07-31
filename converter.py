@@ -4,16 +4,22 @@ optionally call the Anthropic API to generate BigQuery SQL or PySpark.
 
 Usage:
     # Dry-run (BigQuery, default)
-    python converter.py --subgraph subgraph.json --dry-run
+    python converter.py --subgraph subgraph.json --dry-run --prompt-output pormpt.txt
 
-    # Dry-run (PySpark)
-    python converter.py --subgraph subgraph.json --target pyspark --dry-run
+    # Dry-run (PySpark, single mapping)
+    python converter.py --subgraph subgraph.json --target pyspark --dry-run --prompt-output pormpt.txt
+
+    # Dry-run (PySpark, entire workflow — JSON from kg_extractor --workflow)
+    python converter.py --subgraph workflow.json --target pyspark-workflow --dry-run --prompt-output pormpt.txt
 
     # Live BigQuery conversion
     python converter.py --subgraph subgraph.json --api-key sk-ant-... --output result.sql
 
-    # Live PySpark conversion
+    # Live PySpark single-mapping conversion
     python converter.py --subgraph subgraph.json --target pyspark --api-key sk-ant-... --output result.py
+
+    # Live PySpark workflow conversion (one or two workflows combined)
+    python converter.py --subgraph workflow.json --target pyspark-workflow --api-key sk-ant-... --output pipeline.py
 
     # API key can also be set via the ANTHROPIC_API_KEY environment variable
 """
@@ -24,20 +30,30 @@ import os
 import sys
 from pathlib import Path
 
-from prompts import SQL_SYSTEM_PROMPT, PYSPARK_SYSTEM_PROMPT
+from prompts import SQL_SYSTEM_PROMPT, PYSPARK_SYSTEM_PROMPT, PYSPARK_WORKFLOW_SYSTEM_PROMPT
+from kg_extractor import CONTEXT_LAYERS
 
 TARGET_PROMPTS = {
-    "bq":      SQL_SYSTEM_PROMPT,
-    "pyspark": PYSPARK_SYSTEM_PROMPT,
+    "bq":               SQL_SYSTEM_PROMPT,
+    "pyspark":          PYSPARK_SYSTEM_PROMPT,
+    "pyspark-workflow": PYSPARK_WORKFLOW_SYSTEM_PROMPT,
 }
 
 TARGET_EXTENSIONS = {
-    "bq":      ".sql",
-    "pyspark": ".py",
+    "bq":               ".sql",
+    "pyspark":          ".py",
+    "pyspark-workflow": ".py",
 }
 
 DEFAULT_MODEL      = "claude-opus-4-8"
 DEFAULT_MAX_TOKENS = 16000
+
+# Maps converter --target to the CONTEXT_LAYERS key in kg_extractor
+_CONTEXT_LAYER_KEY = {
+    "bq":               "bq",
+    "pyspark":          "pyspark",
+    "pyspark-workflow": "pyspark",
+}
 
 
 def load_subgraph(path: str) -> dict:
@@ -92,14 +108,18 @@ def call_api(
         print("ERROR: anthropic package not installed. Run: pip install anthropic", file=sys.stderr)
         sys.exit(1)
 
-    mapping_name = payload.get("subgraph", {}).get("mapping_name", "output")
+    if target == "pyspark-workflow":
+        wf_names = payload.get("workflow", {}).get("workflow_names", ["output"])
+        stem = "_".join(wf_names)
+    else:
+        stem = payload.get("subgraph", {}).get("mapping_name", "output")
     if not output_path:
-        output_path = f"{mapping_name}{TARGET_EXTENSIONS[target]}"
+        output_path = f"{stem}{TARGET_EXTENSIONS[target]}"
 
     client = anthropic.Anthropic(api_key=api_key)
     user_message = assemble_user_message(payload)
 
-    print(f"Calling {model} for mapping: {mapping_name} (target: {target}) …", file=sys.stderr)
+    print(f"Calling {model} for {stem!r} (target: {target}) …", file=sys.stderr)
 
     with client.messages.stream(
         model=model,
@@ -134,8 +154,9 @@ def main():
         description="Convert an Informatica mapping subgraph JSON to BigQuery SQL or PySpark via Claude."
     )
     ap.add_argument("--subgraph",   required=True,             help="Path to the subgraph JSON file (from kg_extractor.py).")
-    ap.add_argument("--target",     default="bq",              choices=["bq", "pyspark"],
-                    help="Conversion target: 'bq' (BigQuery SQL, default) or 'pyspark'.")
+    ap.add_argument("--target",     default="bq",              choices=["bq", "pyspark", "pyspark-workflow"],
+                    help="Conversion target: 'bq' (BigQuery SQL, default), 'pyspark' (single mapping), "
+                         "or 'pyspark-workflow' (one or more full workflows → one PySpark file).")
     ap.add_argument("--dry-run",    action="store_true",       help="Print the assembled prompt without calling the API.")
     ap.add_argument("--api-key",    default=None,              help="Anthropic API key (or set ANTHROPIC_API_KEY env var).")
     ap.add_argument("--model",      default=DEFAULT_MODEL,     help=f"Claude model ID (default: {DEFAULT_MODEL}).")
@@ -153,6 +174,11 @@ def main():
 
     payload = load_subgraph(args.subgraph)
     system_prompt = TARGET_PROMPTS[args.target]
+
+    # Replace the context_layer with the target-appropriate maps so the LLM
+    # always receives PySpark types/functions for pyspark targets and BQ types
+    # for the bq target, regardless of what was baked into the JSON at extraction time.
+    payload["context_layer"] = CONTEXT_LAYERS[_CONTEXT_LAYER_KEY[args.target]]
 
     if args.dry_run:
         dry_run(payload, system_prompt, args.prompt_output)

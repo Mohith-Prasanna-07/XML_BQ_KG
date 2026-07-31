@@ -1,10 +1,17 @@
 """
-kg_extractor.py — Query Neo4j for a mapping subgraph and emit JSON
-matching the input structure expected by SQL_SYSTEM_PROMPT in prompts.py.
+kg_extractor.py — Query Neo4j for a mapping or workflow subgraph and emit JSON
+matching the input structure expected by prompts in prompts.py.
 
 Usage:
+    # Single mapping (existing)
     python kg_extractor.py --mapping M_MY_MAPPING --password <pw>
     python kg_extractor.py --mapping M_MY_MAPPING --folder MY_FOLDER --password <pw> --output subgraph.json
+
+    # Entire workflow → multi-mapping JSON for pyspark-workflow target
+    python kg_extractor.py --workflow W_MY_WORKFLOW --folder MY_FOLDER --password <pw> --output workflow.json
+
+    # Two workflows combined into one multi-mapping JSON
+    python kg_extractor.py --workflow W_WF1 W_WF2 --folder MY_FOLDER --password <pw> --output combined.json
 """
 
 import argparse
@@ -42,7 +49,7 @@ _PROP_KEY = {
 # Context layer — Informatica → BigQuery translation reference
 # ---------------------------------------------------------------------------
 
-_FUNCTION_MAP = {
+_FUNCTION_MAP_BQ = {
     "IIF":              "IF(cond, a, b)",
     "ISNULL":           "x IS NULL",
     "DECODE":           "CASE WHEN ... THEN ... ELSE ... END",
@@ -83,7 +90,7 @@ _FUNCTION_MAP = {
     "LIKE":             "x LIKE 'pattern'",
 }
 
-_DATATYPE_MAP = {
+_DATATYPE_MAP_BQ = {
     "string":     "STRING",
     "nstring":    "STRING",
     "char":       "STRING",
@@ -108,7 +115,7 @@ _DATATYPE_MAP = {
     "bit":        "BOOL",
 }
 
-_TRANSFORM_PATTERNS = {
+_TRANSFORM_PATTERNS_BQ = {
     "Source Qualifier": {
         "cte_prefix": "cte_SQ_",
         "base_table": "`@{PROJECT_ID}.@{DATASET}.<table_name>`",
@@ -161,6 +168,146 @@ _TRANSFORM_PATTERNS = {
 }
 
 # ---------------------------------------------------------------------------
+# Context layer — Informatica → PySpark translation reference
+# ---------------------------------------------------------------------------
+
+_FUNCTION_MAP_PYSPARK = {
+    "IIF":              "F.when(F.expr('cond'), a).otherwise(b)",
+    "ISNULL":           "F.col('x').isNull()",
+    "DECODE":           "F.when(F.col('x')==v1, r1)...otherwise(default)",
+    "NVL":              "F.coalesce(F.col('x'), F.lit(fallback))",
+    "NVL2":             "F.when(F.col('x').isNotNull(), a).otherwise(b)",
+    "TO_DATE":          "F.lit('9999-12-31').cast(DateType())",
+    "TO_CHAR":          "F.date_format(F.col('d'), fmt)",
+    "DATE_DIFF":        "F.months_between(F.col('a'), F.col('b'))",
+    "ADD_MONTHS":       "F.add_months(F.col('d'), n)",
+    "SESSSTARTTIME":    "F.current_timestamp()",
+    "SYSDATE":          "F.current_date()",
+    "LAST_DAY":         "F.last_day(F.col('d'))",
+    "TRUNC":            "F.trunc(F.col('d'), 'MM')  or  F.floor(F.col('x'))",
+    "INSTR":            "F.locate(sub, F.col('s'))",
+    "SUBSTR":           "F.substring(F.col('s'), start, length)",
+    "LENGTH":           "F.length(F.col('x'))",
+    "LTRIM":            "F.ltrim(F.col('x'))",
+    "RTRIM":            "F.rtrim(F.col('x'))",
+    "TRIM":             "F.trim(F.col('x'))",
+    "UPPER":            "F.upper(F.col('x'))",
+    "LOWER":            "F.lower(F.col('x'))",
+    "LPAD":             "F.lpad(F.col('s'), len, pad)",
+    "RPAD":             "F.rpad(F.col('s'), len, pad)",
+    "CONCAT":           "F.concat(F.col('a'), F.col('b'))",
+    "MOD":              "F.col('a') % b",
+    "ABS":              "F.abs(F.col('x'))",
+    "GREATEST":         "F.greatest(F.col('a'), F.col('b'), ...)",
+    "LEAST":            "F.least(F.col('a'), F.col('b'), ...)",
+    "ROUND":            "F.round(F.col('x'), d)",
+    "FLOOR":            "F.floor(F.col('x'))",
+    "CEIL":             "F.ceil(F.col('x'))",
+    "POWER":            "F.pow(F.col('b'), e)",
+    "SQRT":             "F.sqrt(F.col('x'))",
+    "SIGN":             "F.signum(F.col('x'))",
+    "REG_EXTRACT":      "F.regexp_extract(F.col('s'), r, 0)",
+    "REG_REPLACE":      "F.regexp_replace(F.col('s'), r, repl)",
+    "IN":               "F.col('x').isin([a, b, ...])",
+    "LIKE":             "F.col('x').like('pattern')",
+}
+
+_DATATYPE_MAP_PYSPARK = {
+    "string":     "StringType()",
+    "nstring":    "StringType()",
+    "char":       "StringType()",
+    "nchar":      "StringType()",
+    "varchar":    "StringType()",
+    "nvarchar":   "StringType()",
+    "text":       "StringType()",
+    "integer":    "IntegerType()",
+    "int":        "IntegerType()",
+    "smallint":   "IntegerType()",
+    "bigint":     "LongType()",
+    "number":     "DecimalType(38, 10)",
+    "decimal":    "DecimalType(p, s)",
+    "float":      "FloatType()",
+    "double":     "DoubleType()",
+    "real":       "FloatType()",
+    "date/time":  "TimestampType()",
+    "date":       "DateType()",
+    "time":       "StringType()  # no native TimeType; store as STRING",
+    "timestamp":  "TimestampType()",
+    "binary":     "BinaryType()",
+    "bit":        "BooleanType()",
+}
+
+_TRANSFORM_PATTERNS_PYSPARK = {
+    "Source Qualifier": {
+        "df_prefix": "df_SQ_",
+        "read": "spark.read.table(f\"{params['schema']}.{table_name}\")",
+        "distinct_support": True,
+        "filter_support": True,
+        "sql_override_support": True,
+    },
+    "Expression": {
+        "df_prefix": "df_EXP_",
+        "output_ports": "df.withColumn('out', F.expr('...'))",
+        "input_ports": "pass-through — no withColumn needed",
+        "variable_ports": "intermediate withColumn referenced by subsequent expressions",
+    },
+    "Lookup Procedure": {
+        "df_prefix": "df_LKP_",
+        "join_type": "left",
+        "read": "spark.read.table(f\"{params['schema']}.{lookup_table}\")",
+    },
+    "Router": {
+        "df_prefix": "df_RTR_<group>_",
+        "generates_multiple_output_dataframes": True,
+        "default_group": "rows not matching any named group condition",
+    },
+    "Update Strategy": {
+        "df_prefix": "df_UPD_",
+        "DD_INSERT": "df.write.mode('append').saveAsTable(...)",
+        "DD_UPDATE": "createOrReplaceTempView + spark.sql(MERGE ...)",
+        "DD_DELETE": "createOrReplaceTempView + spark.sql(MERGE ... WHEN MATCHED THEN DELETE)",
+        "DD_REJECT": "# TODO: rejected rows — manual review required",
+    },
+    "Aggregator": {
+        "df_prefix": "df_AGG_",
+        "group_by_ports": "fields with expression_type=GROUPBY",
+        "aggregate_ports": "fields with aggregate expressions (count/sum/avg/max/min)",
+    },
+    "Filter": {
+        "df_prefix": "df_FLT_",
+        "api": "df.filter(F.expr('<condition>'))",
+    },
+    "Joiner": {
+        "df_prefix": "df_JNR_",
+        "master_side": "left DataFrame (already assigned)",
+        "detail_side": "right DataFrame loaded via spark.read.table()",
+        "default_join": "inner",
+    },
+    "Sequence Generator": {
+        "df_prefix": "df_SEQ_",
+        "NEXTVAL": "F.row_number().over(Window.orderBy(F.lit(1)))",
+        "CURRVAL": "F.row_number().over(Window.orderBy(F.lit(1))) - 1",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Exported context layers — keyed by converter target
+# ---------------------------------------------------------------------------
+
+CONTEXT_LAYERS = {
+    "bq": {
+        "function_map":       _FUNCTION_MAP_BQ,
+        "datatype_map":       _DATATYPE_MAP_BQ,
+        "transform_patterns": _TRANSFORM_PATTERNS_BQ,
+    },
+    "pyspark": {
+        "function_map":       _FUNCTION_MAP_PYSPARK,
+        "datatype_map":       _DATATYPE_MAP_PYSPARK,
+        "transform_patterns": _TRANSFORM_PATTERNS_PYSPARK,
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Extractor class
 # ---------------------------------------------------------------------------
 
@@ -190,20 +337,88 @@ class KGExtractor:
                 )
             info = mapping_rows[0]
             mid  = info["mapping_id"]
+            subgraph = self._extract_mapping_subgraph(db, mid)
+            subgraph["mapping_name"] = info["name"]
 
-            transformations   = self._get_transformations(db, mid)
-            ports_by_trans    = self._get_ports(db, mid)
-            props_by_trans    = self._get_properties(db, mid)
-            groups_by_trans   = self._get_router_groups(db, mid)
-            lkp_by_trans      = self._get_lookup_conditions(db, mid)
-            inter_edges       = self._get_inter_flows(db, mid)
-            intra_flows       = self._get_intra_flows(db, mid)
-            target_flows      = self._get_target_flows(db, mid)
-            sources           = self._get_sources(db, mid)
-            targets           = self._get_targets(db, mid)
-            parameters        = self._get_parameters(db, mid)
+        return {
+            "subgraph": subgraph,
+            "context_layer": {
+                "function_map":       _FUNCTION_MAP_BQ,
+                "datatype_map":       _DATATYPE_MAP_BQ,
+                "transform_patterns": _TRANSFORM_PATTERNS_BQ,
+            },
+        }
 
-        ordered = self._topo_sort(transformations, inter_edges)
+    def extract_workflow(self, workflow_names: list, folder_name: str = None) -> dict:
+        """Extract all session mappings from one or more workflows into a combined structure."""
+        all_mappings = []
+
+        with self.driver.session() as db:
+            for wf_name in workflow_names:
+                wf_rows = self._find_workflow(db, wf_name, folder_name)
+                if not wf_rows:
+                    hint = f" in folder '{folder_name}'" if folder_name else ""
+                    raise ValueError(f"Workflow '{wf_name}' not found{hint}.")
+
+                info = wf_rows[0]
+                wid  = info["workflow_id"]
+
+                sessions  = self._get_workflow_sessions(db, wid)
+                dep_edges = self._get_session_order(db, wid)
+
+                session_by_id  = {s["session_id"]: s for s in sessions}
+                ordered_ids    = self._topo_sort_sessions(sessions, dep_edges)
+                ordered_sessions = [session_by_id[sid] for sid in ordered_ids if sid in session_by_id]
+
+                for order_idx, session in enumerate(ordered_sessions):
+                    mapping_name = session.get("mapping_name", "")
+                    if not mapping_name:
+                        continue
+
+                    mapping_rows = self._find_mapping(db, mapping_name, folder_name)
+                    if not mapping_rows:
+                        continue
+
+                    m_info   = mapping_rows[0]
+                    subgraph = self._extract_mapping_subgraph(db, m_info["mapping_id"])
+                    subgraph["mapping_name"]  = m_info["name"]
+                    subgraph["session_name"]  = session["name"]
+                    subgraph["session_order"] = order_idx
+                    subgraph["workflow_name"] = wf_name
+                    all_mappings.append(subgraph)
+
+        return {
+            "workflow": {
+                "workflow_names": workflow_names,
+                "folder":         folder_name,
+                "mappings":       all_mappings,
+            },
+            "context_layer": {
+                "function_map":       _FUNCTION_MAP_BQ,
+                "datatype_map":       _DATATYPE_MAP_BQ,
+                "transform_patterns": _TRANSFORM_PATTERNS_BQ,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Neo4j queries
+    # ------------------------------------------------------------------
+
+    def _extract_mapping_subgraph(self, db, mid) -> dict:
+        """Extract all data for one mapping; returns the subgraph dict (no context_layer or mapping_name)."""
+        transformations   = self._get_transformations(db, mid)
+        ports_by_trans    = self._get_ports(db, mid)
+        props_by_trans    = self._get_properties(db, mid)
+        groups_by_trans   = self._get_router_groups(db, mid)
+        lkp_by_trans      = self._get_lookup_conditions(db, mid)
+        inter_edges       = self._get_inter_flows(db, mid)
+        intra_flows       = self._get_intra_flows(db, mid)
+        target_flows      = self._get_target_flows(db, mid)
+        sources           = self._get_sources(db, mid)
+        targets           = self._get_targets(db, mid)
+        parameters        = self._get_parameters(db, mid)
+
+        ordered  = self._topo_sort(transformations, inter_edges)
         pipeline = self._build_pipeline(ordered, ports_by_trans, props_by_trans,
                                         groups_by_trans, lkp_by_trans, intra_flows)
 
@@ -220,25 +435,13 @@ class KGExtractor:
         ]
 
         return {
-            "subgraph": {
-                "mapping_name":  info["name"],
-                "description":   "",
-                "sources":       sources,
-                "targets":       targets,
-                "pipeline":      pipeline,
-                "field_lineage": field_lineage,
-                "parameters":    parameters,
-            },
-            "context_layer": {
-                "function_map":      _FUNCTION_MAP,
-                "datatype_map":      _DATATYPE_MAP,
-                "transform_patterns": _TRANSFORM_PATTERNS,
-            },
+            "description":   "",
+            "sources":       sources,
+            "targets":       targets,
+            "pipeline":      pipeline,
+            "field_lineage": field_lineage,
+            "parameters":    parameters,
         }
-
-    # ------------------------------------------------------------------
-    # Neo4j queries
-    # ------------------------------------------------------------------
 
     def _find_mapping(self, db, mapping_name, folder_name):
         q = (
@@ -499,6 +702,44 @@ class KGExtractor:
             for r in result
         ]
 
+    def _find_workflow(self, db, workflow_name, folder_name):
+        q = (
+            "MATCH (r:Repository)-[:HAS_FOLDER]->(f:Folder)"
+            "-[:HAS_WORKFLOW]->(w:Workflow) "
+            "WHERE w.name = $name"
+        )
+        params = {"name": workflow_name}
+        if folder_name:
+            q += " AND f.name = $folder"
+            params["folder"] = folder_name
+        q += " RETURN w.workflowId AS workflow_id, w.name AS name, f.name AS folder"
+        return [dict(r) for r in db.run(q, **params)]
+
+    def _get_workflow_sessions(self, db, wid):
+        result = db.run(
+            """
+            MATCH (w:Workflow {workflowId: $wid})-[:HAS_SESSION]->(s:Session)
+            OPTIONAL MATCH (s)-[:RUNS_MAPPING]->(m:Mapping)
+            RETURN s.sessionId                     AS session_id,
+                   s.name                          AS name,
+                   coalesce(m.name, '')             AS mapping_name
+            """,
+            wid=wid,
+        )
+        return [dict(r) for r in result]
+
+    def _get_session_order(self, db, wid):
+        """Returns DEPENDS_ON edges between sessions in the same workflow for ordering."""
+        result = db.run(
+            """
+            MATCH (w:Workflow {workflowId: $wid})-[:HAS_SESSION]->(s2:Session)
+                  -[:DEPENDS_ON]->(s1:Session)<-[:HAS_SESSION]-(w)
+            RETURN s1.sessionId AS from_id, s2.sessionId AS to_id
+            """,
+            wid=wid,
+        )
+        return [dict(r) for r in result]
+
     # ------------------------------------------------------------------
     # Topological sort (Kahn's algorithm)
     # ------------------------------------------------------------------
@@ -532,6 +773,33 @@ class KGExtractor:
             order.append(tid)
 
         return [by_id[tid] for tid in order if tid in by_id]
+
+    def _topo_sort_sessions(self, sessions, dep_edges):
+        """Topological sort of workflow sessions using DEPENDS_ON edges."""
+        all_ids   = {s["session_id"] for s in sessions}
+        in_degree = {sid: 0 for sid in all_ids}
+        adj       = defaultdict(set)
+
+        for e in dep_edges:
+            src, dst = e["from_id"], e["to_id"]
+            if src in all_ids and dst in all_ids and dst not in adj[src]:
+                adj[src].add(dst)
+                in_degree[dst] += 1
+
+        queue = deque(sorted(sid for sid in all_ids if in_degree[sid] == 0))
+        order = []
+        while queue:
+            sid = queue.popleft()
+            order.append(sid)
+            for neighbour in sorted(adj[sid]):
+                in_degree[neighbour] -= 1
+                if in_degree[neighbour] == 0:
+                    queue.append(neighbour)
+
+        for sid in sorted(all_ids - set(order)):
+            order.append(sid)
+
+        return order
 
     # ------------------------------------------------------------------
     # Pipeline assembly
@@ -614,10 +882,14 @@ class KGExtractor:
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Extract a mapping subgraph from Neo4j and output JSON for LLM conversion."
+        description="Extract a mapping or workflow subgraph from Neo4j and output JSON for LLM conversion."
     )
-    ap.add_argument("--mapping",  required=True,                    help="Mapping name (exact, case-sensitive).")
-    ap.add_argument("--folder",   default=None,                     help="Folder name — required when mapping name is ambiguous.")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--mapping",  metavar="MAPPING_NAME",
+                      help="Single mapping name (exact, case-sensitive).")
+    mode.add_argument("--workflow", nargs="+", metavar="WORKFLOW_NAME",
+                      help="One or more workflow names to extract and combine into a single multi-mapping JSON.")
+    ap.add_argument("--folder",   default=None,                     help="Folder name — required when name is ambiguous.")
     ap.add_argument("--uri",      default="bolt://localhost:7687",   help="Neo4j bolt URI.")
     ap.add_argument("--user",     default="neo4j",                  help="Neo4j username.")
     ap.add_argument("--password", required=True,                    help="Neo4j password.")
@@ -630,7 +902,10 @@ def main():
 
     extractor = KGExtractor(args.uri, args.user, args.password)
     try:
-        payload = extractor.extract(args.mapping, args.folder)
+        if args.mapping:
+            payload = extractor.extract(args.mapping, args.folder)
+        else:
+            payload = extractor.extract_workflow(args.workflow, args.folder)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)

@@ -53,6 +53,30 @@ _PORT_LABEL = {
     "OUTPUT": "OutputPort",
     "INPUT/OUTPUT": "InputOutputPort",
     "LOCAL VARIABLE": "VariablePort",
+    "RETURN": "ReturnPort",      # unconnected lookup result port
+}
+
+# Maps CONNECTOR FROMINSTANCETYPE/TOINSTANCETYPE (lowercased) to internal type codes.
+# Using these attributes rather than instance_map avoids collisions when a table
+# appears as both SOURCE and TARGET instances with the same NAME.
+_CONNECTOR_INSTANCE_TYPES = {
+    "target definition":            "TARGET",
+    "xml target definition":        "TARGET",
+    "source definition":            "SOURCE",
+    "source qualifier":             "TRANSFORMATION",
+    "application source qualifier": "TRANSFORMATION",
+    "expression":                   "TRANSFORMATION",
+    "aggregator":                   "TRANSFORMATION",
+    "router":                       "TRANSFORMATION",
+    "joiner":                       "TRANSFORMATION",
+    "lookup procedure":             "TRANSFORMATION",
+    "sequence":                     "TRANSFORMATION",
+    "stored procedure":             "TRANSFORMATION",
+    "filter":                       "TRANSFORMATION",
+    "update strategy":              "TRANSFORMATION",
+    "rank":                         "TRANSFORMATION",
+    "sorter":                       "TRANSFORMATION",
+    "normalizer":                   "TRANSFORMATION",
 }
 
 
@@ -360,6 +384,14 @@ class InformaticaXMLParser:
         folder_sources = self._index_sources(folder_elem, r_name, f_name)
         folder_targets = self._index_targets(folder_elem, r_name, f_name)
 
+        # Index reusable transformations defined at folder level (e.g. Sequence
+        # Generators, reusable lookups).  Mappings reference these via INSTANCE
+        # elements but the TRANSFORMATION element lives here, not inside MAPPING.
+        folder_trans_map = {
+            t.get("NAME", ""): t
+            for t in folder_elem.findall("TRANSFORMATION")
+        }
+
         for source_elem in folder_elem.findall("SOURCE"):
             self._load_source_definition(db, source_elem, r_name, f_name)
 
@@ -368,7 +400,7 @@ class InformaticaXMLParser:
 
         for mapping_elem in folder_elem.findall("MAPPING"):
             self._load_mapping(db, mapping_elem, r_name, f_name, f_id,
-                               folder_sources, folder_targets)
+                               folder_sources, folder_targets, folder_trans_map)
 
         # Folder-level SESSION elements (reusable sessions defined outside WORKFLOW)
         for session_elem in folder_elem.findall("SESSION"):
@@ -443,6 +475,10 @@ class InformaticaXMLParser:
             self._load_session_instance(
                 db, sesstrans, r_name, f_name, "FOLDER",
                 s_name, s_id, m_name, inst_map, sq_sources,
+            )
+        for ext_elem in session_elem.findall("SESSIONEXTENSION"):
+            self._load_session_extension(
+                db, ext_elem, r_name, f_name, "FOLDER", s_name,
             )
 
     # ------------------------------------------------------------------
@@ -653,7 +689,7 @@ class InformaticaXMLParser:
     # ------------------------------------------------------------------
 
     def _load_mapping(self, db, mapping_elem, r_name, f_name, f_id,
-                      folder_sources, folder_targets) -> None:
+                      folder_sources, folder_targets, folder_trans_map=None) -> None:
         m_name = mapping_elem.get("NAME", "")
         m_id = mapping_id(r_name, f_name, m_name)
 
@@ -690,9 +726,29 @@ class InformaticaXMLParser:
         self._mapping_instances[m_name] = instance_map
         self._mapping_sq_sources[m_name] = self._build_sq_to_sources(mapping_elem, instance_map)
 
-        # Transformations and their ports
+        # Transformations and their ports — inline definitions first
+        inline_trans_names: set = set()
         for trans_elem in mapping_elem.findall("TRANSFORMATION"):
+            inline_trans_names.add(trans_elem.get("NAME", ""))
             self._load_transformation(db, trans_elem, r_name, f_name, m_name, m_id)
+
+        # Load folder-level reusable transformations referenced by instances
+        # but absent as inline TRANSFORMATION children (common for Sequence
+        # Generators and reusable unconnected lookups).
+        if folder_trans_map:
+            for inst_info in instance_map.values():
+                if inst_info.get("type") != "TRANSFORMATION":
+                    continue
+                trans_name = inst_info["name"]
+                if trans_name and trans_name not in inline_trans_names and trans_name in folder_trans_map:
+                    logger.debug(
+                        "Loading folder-level transformation '%s' into mapping '%s'",
+                        trans_name, m_name,
+                    )
+                    self._load_transformation(
+                        db, folder_trans_map[trans_name], r_name, f_name, m_name, m_id,
+                    )
+                    inline_trans_names.add(trans_name)
 
         # Mapping-level parameters (MAPPINGVARIABLE)
         for var_elem in mapping_elem.findall("MAPPINGVARIABLE"):
@@ -702,6 +758,11 @@ class InformaticaXMLParser:
         for conn_elem in mapping_elem.findall("CONNECTOR"):
             self._load_connector(db, conn_elem, r_name, f_name, m_name,
                                  instance_map, sources, targets)
+
+        # Wire unconnected lookup :LKP.Name() calls to their RETURN ports
+        self._create_unconnected_lookup_flows(
+            db, mapping_elem, r_name, f_name, m_name, folder_trans_map,
+        )
 
     def _build_instance_map(self, mapping_elem) -> dict:
         """
@@ -815,13 +876,12 @@ class InformaticaXMLParser:
 
     def _load_lookup_conditions(self, db, trans_elem, r_name, f_name,
                                  m_name, t_name, t_id) -> None:
-        attrs = {a.get("NAME", "").strip(): a.get("VALUE", "").strip()
+        # Normalise to lowercase so different export casings all match.
+        attrs = {a.get("NAME", "").strip().lower(): a.get("VALUE", "").strip()
                  for a in trans_elem.findall("TABLEATTRIBUTE")}
 
-        table_name = (attrs.get("Lookup table name")
-                      or attrs.get("Lookup Table Name", ""))
-        condition  = (attrs.get("Lookup condition")
-                      or attrs.get("Lookup Condition", ""))
+        table_name = attrs.get("lookup table name", "")
+        condition  = attrs.get("lookup condition", "")
 
         if not table_name and not condition:
             return
@@ -944,6 +1004,64 @@ class InformaticaXMLParser:
                         """,
                         fromId=ports[source_name]["id"],
                         toId=target_info["id"],
+                    )
+
+    def _create_unconnected_lookup_flows(self, db, mapping_elem, r_name, f_name,
+                                          m_name, folder_trans_map=None) -> None:
+        """
+        Unconnected lookups are invoked via  :LKP.LookupName(arg, ...)  inside
+        port expressions rather than through CONNECTOR elements, so they produce
+        no graph edges by default.  This method scans every port expression in
+        the mapping, detects :LKP. calls, and creates FLOWS_TO edges from the
+        calling port to the lookup's RETURN port.
+
+        folder_trans_map is also searched for RETURN ports so that reusable
+        lookups defined at folder level are handled correctly.
+        """
+        # Build  uppercase_lkp_name → (original_name, return_port_name)
+        # from both inline and folder-level lookup transformations.
+        lkp_return_ports: dict = {}
+        candidates = list(mapping_elem.findall("TRANSFORMATION"))
+        if folder_trans_map:
+            candidates.extend(folder_trans_map.values())
+
+        for trans_elem in candidates:
+            if "LOOKUP" not in trans_elem.get("TYPE", "").upper():
+                continue
+            lkp_name = trans_elem.get("NAME", "")
+            for tf in trans_elem.findall("TRANSFORMFIELD"):
+                if tf.get("PORTTYPE", tf.get("TYPE", "")).upper() == "RETURN":
+                    lkp_return_ports[lkp_name.upper()] = (lkp_name, tf.get("NAME", ""))
+                    break  # only one RETURN port per lookup
+
+        if not lkp_return_ports:
+            return
+
+        lkp_pattern = re.compile(r':LKP\.(\w+)\s*\(', re.IGNORECASE)
+
+        for trans_elem in mapping_elem.findall("TRANSFORMATION"):
+            t_name = trans_elem.get("NAME", "")
+            for tf in trans_elem.findall("TRANSFORMFIELD"):
+                expr = tf.get("EXPRESSION", "")
+                if not expr or ":LKP." not in expr.upper():
+                    continue
+                p_name    = tf.get("NAME", "")
+                from_p_id = port_id(r_name, f_name, m_name, t_name, p_name)
+                for match in lkp_pattern.finditer(expr):
+                    entry = lkp_return_ports.get(match.group(1).upper())
+                    if entry is None:
+                        continue
+                    lkp_orig_name, return_port_name = entry
+                    ret_p_id = port_id(r_name, f_name, m_name, lkp_orig_name, return_port_name)
+                    # Data flows FROM the lookup's RETURN port INTO the calling expression
+                    # port, so RETURN is the source and the calling port is the sink.
+                    db.run(
+                        """
+                        MATCH (from:Column:Port {portId: $fromId})
+                        MATCH (to:Column:Port   {portId: $toId})
+                        MERGE (from)-[:FLOWS_TO]->(to)
+                        """,
+                        fromId=ret_p_id, toId=from_p_id,
                     )
 
     # ------------------------------------------------------------------
@@ -1076,8 +1194,14 @@ class InformaticaXMLParser:
         from_info = instance_map.get(from_inst_name, {"type": "TRANSFORMATION", "name": from_inst_name})
         to_info   = instance_map.get(to_inst_name,   {"type": "TRANSFORMATION", "name": to_inst_name})
 
-        from_type = from_info["type"]
-        to_type   = to_info["type"]
+        # FROMINSTANCETYPE/TOINSTANCETYPE on the CONNECTOR element are authoritative
+        # for type resolution; they prevent collisions when a SOURCE and TARGET share
+        # the same instance name (e.g. a table used in both source and target roles).
+        from_type_attr = conn_elem.get("FROMINSTANCETYPE", "").strip().lower()
+        to_type_attr   = conn_elem.get("TOINSTANCETYPE",   "").strip().lower()
+        from_type = _CONNECTOR_INSTANCE_TYPES.get(from_type_attr) or from_info["type"]
+        to_type   = _CONNECTOR_INSTANCE_TYPES.get(to_type_attr)   or to_info["type"]
+
         from_obj  = from_info["name"]
         to_obj    = to_info["name"]
 
@@ -1171,6 +1295,34 @@ class InformaticaXMLParser:
                     wfId=wf_id, sId=referenced_s_id,
                 )
 
+                # Workflow task dependencies
+        for link_elem in wf_elem.findall("WORKFLOWLINK"):
+            from_task = link_elem.get("FROMTASK", "")
+            to_task = link_elem.get("TOTASK", "")
+            condition = link_elem.get("CONDITION", "")
+
+            if not from_task or not to_task:
+                continue
+
+            from_session_id = f"{r_name}.{f_name}.{from_task}"
+            to_session_id = f"{r_name}.{f_name}.{to_task}"
+
+            db.run(
+                """
+                MATCH (from:Session {sessionId: $fromId})
+                MATCH (to:Session   {sessionId: $toId})
+
+                MERGE (to)-[d:DEPENDS_ON]->(from)
+                SET d.condition = $condition
+
+                MERGE (from)-[p:PREREQUISITE_FOR]->(to)
+                SET p.condition = $condition
+                """,
+                fromId=from_session_id,
+                toId=to_session_id,
+                condition=condition,
+            )
+
         # Worklets nested inside the workflow
         for wl_elem in wf_elem.findall("WORKLET"):
             wl_name = wl_elem.get("NAME", "")
@@ -1259,6 +1411,10 @@ class InformaticaXMLParser:
             self._load_session_instance(
                 db, sesstrans, r_name, f_name, wf_name,
                 task_name, s_id, mapping_name, inst_map, sq_sources,
+            )
+        for ext_elem in task_elem.findall("SESSIONEXTENSION"):
+            self._load_session_extension(
+                db, ext_elem, r_name, f_name, wf_name, task_name,
             )
 
     def _load_session_instance(self, db, sesstrans_elem, r_name, f_name,
@@ -1381,6 +1537,73 @@ class InformaticaXMLParser:
                     """,
                     id=ip_id, name=prop_name, value=prop_val, tfiId=tfi_id,
                 )
+
+    # ------------------------------------------------------------------
+    # Session extension properties (SESSIONEXTENSION)
+    # ------------------------------------------------------------------
+
+    def _load_session_extension(self, db, ext_elem, r_name, f_name,
+                                 wf_name, s_name) -> None:
+        """
+        Attach SESSIONEXTENSION ATTRIBUTE and CONNECTIONREFERENCE values as
+        InstanceProperty nodes on the matching session instance.
+
+        SESSIONEXTENSION elements carry reader/writer/lookup config that is not
+        present on the corresponding SESSTRANSFORMATIONINST (e.g. connection
+        variables, target load type, reject file paths).  Only properties with a
+        non-empty value other than "NO" are stored.
+        """
+        inst_name  = ext_elem.get("SINSTANCENAME", "")
+        trans_type = ext_elem.get("TRANSFORMATIONTYPE", "").upper().strip()
+
+        if not inst_name:
+            return
+
+        # Collect (prop_name, prop_value) pairs, skipping empty/"NO" values.
+        props: list = []
+
+        for attr in ext_elem.findall("ATTRIBUTE"):
+            val = attr.get("VALUE", "").strip()
+            if not val or val.upper() == "NO":
+                continue
+            props.append((attr.get("NAME", ""), val))
+
+        for cref in ext_elem.findall("CONNECTIONREFERENCE"):
+            variable = cref.get("VARIABLE", "").strip()
+            if variable and variable.upper() != "NO":
+                cnx_ref = cref.get("CNXREFNAME", "Connection")
+                props.append((f"{cnx_ref} Variable", variable))
+
+        if not props:
+            return
+
+        # Resolve which instance node to attach properties to, matching the
+        # same classification used in _load_session_instance.
+        if trans_type in _TARGET_TRANS_TYPES:
+            inst_id    = target_instance_id(r_name, f_name, wf_name, s_name, inst_name)
+            inst_label = "TargetInstance"
+            id_prop    = "targetInstanceId"
+        elif trans_type in _SOURCE_TRANS_TYPES:
+            inst_id    = source_instance_id(r_name, f_name, wf_name, s_name, inst_name)
+            inst_label = "SourceInstance"
+            id_prop    = "sourceInstanceId"
+        else:
+            inst_id    = transformation_instance_id(r_name, f_name, wf_name, s_name, inst_name)
+            inst_label = "TransformationInstance"
+            id_prop    = "transformationInstanceId"
+
+        for prop_name, prop_val in props:
+            ip_id = instance_property_id(r_name, f_name, s_name, inst_name, prop_name)
+            db.run(
+                f"""
+                MERGE (ip:InstanceProperty {{instancePropertyId: $id}})
+                SET ip.name = $name, ip.value = $value
+                WITH ip
+                MATCH (i:{inst_label} {{{id_prop}: $instId}})
+                MERGE (i)-[:HAS_PROPERTY]->(ip)
+                """,
+                id=ip_id, name=prop_name, value=prop_val, instId=inst_id,
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -4,10 +4,11 @@ Each is a self-contained system prompt that receives a KG subgraph
 JSON as the user message.
 
 Targets:
-  SQL_SYSTEM_PROMPT     — Informatica → BigQuery SQL
-  PYSPARK_SYSTEM_PROMPT — Informatica → PySpark (generic / platform-agnostic)
-  YAML_SYSTEM_PROMPT    — Informatica → GCP config YAML
-  DAG_SYSTEM_PROMPT     — Informatica → Airflow DAG
+  SQL_SYSTEM_PROMPT              — Informatica → BigQuery SQL
+  PYSPARK_SYSTEM_PROMPT          — Informatica → PySpark (single mapping)
+  PYSPARK_WORKFLOW_SYSTEM_PROMPT — Informatica workflow(s) → single PySpark file (multi-mapping)
+  YAML_SYSTEM_PROMPT             — Informatica → GCP config YAML
+  DAG_SYSTEM_PROMPT              — Informatica → Airflow DAG
 """
 
 SQL_SYSTEM_PROMPT = """
@@ -387,6 +388,198 @@ SCRIPT SKELETON:
 
       # --- Write to target ---
       ...
+
+
+  if __name__ == "__main__":
+      main()
+
+OUTPUT FORMAT:
+Return ONLY the Python script content. No explanation text outside the script.
+For anything that cannot be converted:
+  # TODO: <reason> — manual review required
+""".strip()
+
+
+PYSPARK_WORKFLOW_SYSTEM_PROMPT = """
+You are an expert in Informatica PowerCenter and Apache PySpark.
+You will receive a JSON object representing one or more Informatica workflows,
+each containing multiple mappings extracted from a Knowledge Graph.
+Your job is to generate a SINGLE, self-contained PySpark Python script that
+executes all mappings in the correct session order within one file.
+
+INPUT STRUCTURE:
+{
+  "workflow": {
+    "workflow_names": ["W_WORKFLOW1"],          // one or two workflow names
+    "folder": "MY_FOLDER",
+    "mappings": [
+      {
+        "mapping_name":  "M_MAPPING_1",
+        "session_name":  "s_MAPPING_1",
+        "session_order": 0,
+        "workflow_name": "W_WORKFLOW1",
+        "description":   "",
+        "sources":  [{"name", "db_type", "owner", "fields": [...]}],
+        "targets":  [{"name", "db_type", "fields": [...]}],
+        "pipeline": [
+          {
+            "name": "...",
+            "type": "Source Qualifier|Expression|Lookup Procedure|Router|Update Strategy|Aggregator|Filter|Joiner|Sequence",
+            "fields": [{"name","datatype","expression","expression_type","port_type","group","ref_field"}],
+            "groups": [...],
+            "sql_override": "...",
+            "source_filter": "...",
+            "lookup_table": "...",
+            "lookup_condition": "...",
+            "filter_condition": "...",
+            "update_strategy_expr": "...",
+            "select_distinct": true|false
+          }
+        ],
+        "field_lineage": [...],
+        "parameters": [{"name","datatype","default_value"}]
+      },
+      // ... more mappings in session_order
+    ]
+  },
+  "context_layer": {
+    "function_map":      {"IIF": "F.when(...).otherwise(...)", ...},
+    "datatype_map":      {"string": "StringType()", ...},
+    "transform_patterns": {...}
+  }
+}
+
+OVERALL SCRIPT STRUCTURE:
+1. File header comment (workflow names, sources, targets, parameters).
+2. All imports once at the top.
+3. A dedicated function for each mapping:
+       def run_<mapping_name_lower>(spark: SparkSession, params: dict) -> None:
+   where <mapping_name_lower> is the mapping_name in lowercase with leading "m_" stripped if present.
+4. A main() function that:
+   - Builds argparse with the UNION of all parameters across all mappings (deduplicated by name).
+   - Creates one SparkSession shared by all mapping functions.
+   - Calls each run_<mapping>() in session_order.
+5. if __name__ == "__main__": main()
+
+REQUIRED IMPORTS (always include all, once):
+  import argparse
+  from pyspark.sql import SparkSession
+  from pyspark.sql import functions as F
+  from pyspark.sql.window import Window
+  from pyspark.sql.types import (
+      StringType, IntegerType, LongType, DoubleType,
+      DecimalType, DateType, TimestampType, StructType, StructField,
+  )
+
+PARAMETER HANDLING:
+- Deduplicate parameters across all mappings by name (same name → one argparse argument).
+- In main(): params = vars(args)  — pass the same dict to every run_* call.
+- Inside each run_* function, reference only the params relevant to that mapping.
+
+PER-MAPPING FUNCTION RULES:
+Each run_<mapping_name>(spark, params) follows the same transformation rules as the
+single-mapping PYSPARK_SYSTEM_PROMPT. Specifically:
+
+1. Source Qualifier
+   - No sql_override:
+       df_SQ_<name> = spark.read.table(f"{params['schema']}.{table_name}")
+       Add .select(...), .filter(...), .distinct() as needed.
+   - With sql_override: df_SQ_<name> = spark.sql('''<translated SQL>''')
+   - Translate Teradata→Spark SQL: CURRENT_DATE→current_date(), ZEROIFNULL→coalesce(x,0), etc.
+
+2. Expression
+   - port_type=OUTPUT  → df.withColumn("field", F.expr("<expression>"))
+   - port_type=LOCAL VARIABLE → intermediate withColumn referenced by other expressions
+   - Translate IIF→F.when, ISNULL→.isNull(), TO_DATE→F.lit(...).cast(DateType()), etc.
+
+3. Lookup Procedure
+   - df_lkp = spark.read.table(f"{params['schema']}.{lookup_table}")
+   - df_LKP_<name> = df.join(df_lkp.alias("lkp"), on=F.expr("<condition>"), how="left")
+
+4. Router
+   - df_RTR_<group>_<name> = df.filter(F.expr("<group_condition>"))
+   - DEFAULT/ELSE group: rows not matching any other group condition.
+
+5. Update Strategy
+   - DD_INSERT only → df.write.mode("append").saveAsTable(...)
+   - DD_UPDATE+DD_INSERT → createOrReplaceTempView + spark.sql(MERGE ...)
+   - DD_DELETE → createOrReplaceTempView + spark.sql(MERGE ... WHEN MATCHED THEN DELETE)
+   - DD_REJECT → # TODO: rejected rows
+
+6. Aggregator
+   - df_AGG_<name> = df.groupBy(...).agg(F.count(...), F.sum(...), ...)
+
+7. Filter
+   - df_FLT_<name> = df.filter(F.expr("<filter_condition>"))
+
+8. Joiner
+   - df_JNR_<name> = master_df.join(detail_df.alias("det"), on=F.expr("<condition>"), how="inner")
+
+9. Sequence Generator
+   - w = Window.orderBy(F.lit(1))
+   - df = df.withColumn("NEXTVAL", F.row_number().over(w))
+
+DATATYPE MAP (Informatica → PySpark):
+  string/char/varchar → StringType()
+  integer/int/smallint → IntegerType()
+  bigint              → LongType()
+  number/decimal      → DecimalType(p, s)
+  float/double/real   → DoubleType()
+  date                → DateType()
+  date/time/datetime/timestamp → TimestampType()
+
+SCRIPT SKELETON:
+  # Pipeline: <workflow_names joined by " + ">
+  # Generated from Informatica Knowledge Graph — PySpark Workflow
+  # Folder: <folder>
+  # Parameters: --param1, --param2 (or "none")
+  #
+  # Mappings (in execution order):
+  #   1. <mapping_name> (session: <session_name>, workflow: <workflow_name>)
+  #   2. ...
+  #
+  # Sources:  <all source tables>
+  # Targets:  <all target tables>
+
+  import argparse
+  from pyspark.sql import SparkSession
+  from pyspark.sql import functions as F
+  from pyspark.sql.window import Window
+  from pyspark.sql.types import ...
+
+
+  def run_<mapping1>(spark: SparkSession, params: dict) -> None:
+      # --- Source reads ---
+      ...
+      # --- Transformation pipeline ---
+      ...
+      # --- Write to target ---
+      ...
+
+
+  def run_<mapping2>(spark: SparkSession, params: dict) -> None:
+      ...
+
+
+  def main() -> None:
+      parser = argparse.ArgumentParser(description="<workflow_names>")
+      parser.add_argument("--<param>", required=True, help="...")
+      ...
+      args = parser.parse_args()
+      params = vars(args)
+
+      spark = (
+          SparkSession.builder
+          .appName("<workflow_names>")
+          .enableHiveSupport()
+          .getOrCreate()
+      )
+
+      run_<mapping1>(spark, params)
+      run_<mapping2>(spark, params)
+      ...
+
+      spark.stop()
 
 
   if __name__ == "__main__":
