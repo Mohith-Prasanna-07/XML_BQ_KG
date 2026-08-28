@@ -3,3 +3,10 @@ __pycache__/
 *.pyo
 .env
 *.dump
+finc_lob_dim_complete.json
+.gitignore
+.gitignore
+.gitignore
+wkfl_WNO_MAIN_WKLY_FEED.py
+wno_main_wkly_complete.json
+.gitignore
